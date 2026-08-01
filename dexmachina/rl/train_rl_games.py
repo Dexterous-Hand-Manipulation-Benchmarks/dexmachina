@@ -143,8 +143,10 @@ def main():
     # also save args
     wandb_cfg['clip'] = f"{obj_name}{start}-{end}-{subject_name}-u{use_clip}"
     wandb_cfg['hand'] = args.hand
+    wandb_cfg['method'] = "FlashSAC"
     
     run = wandb.init(
+        entity="schrapsi-kit",
         project=args.wandb_project, 
         config=wandb_cfg,
         monitor_gym=True,
