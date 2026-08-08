@@ -7,20 +7,21 @@ from dexmachina.envs.reward_utils import position_distance, rotation_distance, c
 
 def get_reward_cfg(last_n_frame=-1):
     reward_cfg = {
+
         "obj_pos_beta": 20.0,
         "obj_rot_beta": 5.0,
         "obj_arti_beta": 20.0,
         "obj_pos_weight": 2.0,
         "obj_rot_weight": 3.0,
-        "obj_arti_weight": 5.0,  
-        
+        "obj_arti_weight": 5.0,
+
         "last_n_frame": last_n_frame,
         "multiply_task_rew": True,
-        "multiply_all_rew": False, 
+        "multiply_all_rew": False,
         "task_rew_weight": 1.0,
 
         "exp_kpt_first": True,
-        "imi_rew_weight":  0.0, 
+        "imi_rew_weight":  1.0,
         "imi_wrist_weight": 0.0, # do a weighted avg between fingertip and wrist poses
         "imi_wrist_rot_beta": 3.0,
         "imi_wrist_pos_beta": 10.0,
@@ -29,7 +30,7 @@ def get_reward_cfg(last_n_frame=-1):
         "bc_rew_weight": 0.0,
         "bc_beta": 500.0,
 
-        "contact_rew_weight": 0.0,
+        "contact_rew_weight": 1.0,
         "contact_rew_function": "exp", # exp or sigmoid
         "wrist_frame_contact": True,
         "contact_beta": 30.0,
@@ -39,10 +40,11 @@ def get_reward_cfg(last_n_frame=-1):
         "mask_zero_contact": True, # if both policy and demo has no contact, reward is 0 (1 if False)
         "contact_phase_penalty": 0,
 
-        "mask_well_track": False, 
+        "mask_well_track": False,
         "scale_well_track": 1.0,
-        "force_penalty": 0.1,  # ~60 contact pairs in each env
-        "action_penalty": 0.0,
+        "force_penalty": 2.0,
+        "action_penalty": 0.05,
+
         "objdex_baseline": False,
         "use_retarget_contact": False,
         "retarget_objframe": True, # if True, the contact is in the object frame, otherwise in the wrist frame
@@ -52,6 +54,11 @@ def get_reward_cfg(last_n_frame=-1):
 
 class RewardModule:
     def __init__(self, reward_cfg, demo_data, retarget_data, device):
+
+        reward_cfg["force_penalty"] = 2.0
+        reward_cfg["action_penalty"] = 0.05
+        reward_cfg["imi_rew_weight"] = 1.0
+        reward_cfg["contact_rew_weight"] = 1.0
         print("\n" + "=" * 50)
         print("[DEBUG] ACTIVE REWARD CONFIGURATION:")
         print(f"  -> Force Penalty:   {reward_cfg.get('force_penalty')}")
