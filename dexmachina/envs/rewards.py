@@ -52,7 +52,14 @@ def get_reward_cfg(last_n_frame=-1):
 
 class RewardModule:
     def __init__(self, reward_cfg, demo_data, retarget_data, device):
-        self.cfg = reward_cfg 
+        print("\n" + "=" * 50)
+        print("[DEBUG] ACTIVE REWARD CONFIGURATION:")
+        print(f"  -> Force Penalty:   {reward_cfg.get('force_penalty')}")
+        print(f"  -> Action Penalty:  {reward_cfg.get('action_penalty')}")
+        print(f"  -> Imi Rew Weight:  {reward_cfg.get('imi_rew_weight')}")
+        print(f"  -> Con Rew Weight:  {reward_cfg.get('contact_rew_weight')}")
+        print("=" * 50 + "\n")
+        self.cfg = reward_cfg
         self.last_n_frame = reward_cfg.get("last_n_frame", -1)
         self.exp_kpt_first = reward_cfg.get("exp_kpt_first", False)
         self.imi_rew_weight = reward_cfg["imi_rew_weight"]        
