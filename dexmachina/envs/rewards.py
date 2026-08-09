@@ -484,14 +484,13 @@ class RewardModule:
         rews['con_rew'] = contact_rew
         return contact_rew, rews
 
-
     def compute_contact_reward(
         self,
         obj_pose,
         wrist_pose_left,
         wrist_pose_right,
         contacts_link_left,
-        contacts_link_valid_left, # shape (N, num_obj_links, num_hand_links)
+        contacts_link_valid_left,  # shape (N, num_obj_links, num_hand_links)
         contacts_link_right,
         contacts_link_valid_right,
         episode_length_buf,
@@ -499,23 +498,36 @@ class RewardModule:
         demo_obj_pos = self.match_demo_state("obj_pos", episode_length_buf)
         demo_obj_quat = self.match_demo_state("obj_quat", episode_length_buf)
         demo_obj_pose = torch.cat([demo_obj_pos, demo_obj_quat], dim=1)
-        contact_rew_left, contact_dict_left = self.compute_hand_contact_reward(
-            contacts_link_left, contacts_link_valid_left, 
-            wrist_pose_left, obj_pose, episode_length_buf, demo_obj_pose, side='left'
-        )
-        contact_rew_right, contact_dict_right = self.compute_hand_contact_reward(
-            contacts_link_right, contacts_link_valid_right, 
-            wrist_pose_right, obj_pose, episode_length_buf, demo_obj_pose, side='right'
-        )
-        contact_rew = (contact_rew_left + contact_rew_right) / 2.0 
-     
-        # add bonus to reward more contact points
-        # num_points = torch.sum(contacts_link_valid_left, dim=-1) + torch.sum(contacts_link_valid_right, dim=-1)
-        # more_points_rew = torch.mean(num_points.float() / 2.0, dim=-1) # average over num_links, then over batch # max is 1.0
-        # contact_rew += more_points_rew * 0.01 
-        
+
+        contact_rew = 0.0
+        contact_dict = {}
+        hand_count = 0
+
+        if contacts_link_left is not None:
+            contact_rew_left, contact_dict_left = self.compute_hand_contact_reward(
+                contacts_link_left, contacts_link_valid_left,
+                wrist_pose_left, obj_pose, episode_length_buf, demo_obj_pose, side='left'
+            )
+            contact_rew += contact_rew_left
+            contact_dict.update(contact_dict_left)
+            hand_count += 1
+
+        if contacts_link_right is not None:
+            contact_rew_right, contact_dict_right = self.compute_hand_contact_reward(
+                contacts_link_right, contacts_link_valid_right,
+                wrist_pose_right, obj_pose, episode_length_buf, demo_obj_pose, side='right'
+            )
+            contact_rew += contact_rew_right
+            contact_dict.update(contact_dict_right)
+            hand_count += 1
+
+        if hand_count > 0:
+            contact_rew = contact_rew / hand_count
+        else:
+            # Fallback zero tensor if no hands are found
+            contact_rew = torch.zeros_like(demo_obj_pos[:, 0])
+
         contact_rew *= self.contact_rew_weight
-        contact_dict = {**contact_dict_left, **contact_dict_right} # merge the two dicts, should have no key overlap
         contact_dict['con_rew'] = contact_rew
         return contact_rew, contact_dict
 
@@ -601,8 +613,8 @@ class RewardModule:
                 imi_rew = torch.where(rew_dict["well_track"], torch.zeros_like(imi_rew), imi_rew) 
             # rew += imi_rew
             rew_dict.update(imi_rew_dict)
- 
-        if self.contact_rew_weight > 0.0: 
+
+        if self.contact_rew_weight > 0.0:
             obj_pose = torch.cat([obj_pos, obj_quat], dim=1)
             demo_pose = torch.cat([demo_pos, demo_quat], dim=1)
             if self.use_retarget_contact:
@@ -612,25 +624,35 @@ class RewardModule:
                     obj_pose, demo_pose, episode_length_buf
                 )
             else:
-                left_reshaped, left_valid = self.reshape_contact_with_label(
-                    contact_link_pos_left, contact_link_valid_left
+                # --- NONE-SAFE RESHAPING ---
+                if contact_link_pos_left is not None:
+                    left_reshaped, left_valid = self.reshape_contact_with_label(
+                        contact_link_pos_left, contact_link_valid_left
                     )
-                right_reshaped, right_valid = self.reshape_contact_with_label(
-                    contact_link_pos_right, contact_link_valid_right
+                else:
+                    left_reshaped, left_valid = None, None
+
+                if contact_link_pos_right is not None:
+                    right_reshaped, right_valid = self.reshape_contact_with_label(
+                        contact_link_pos_right, contact_link_valid_right
                     )
+                else:
+                    right_reshaped, right_valid = None, None
+                # ---------------------------
+
                 contact_rew, contact_dict = self.compute_contact_reward(
-                    obj_pose, 
-                    wrist_pose_left, 
+                    obj_pose,
+                    wrist_pose_left,
                     wrist_pose_right,
-                    left_reshaped, left_valid, 
+                    left_reshaped, left_valid,
                     right_reshaped, right_valid,
                     episode_length_buf
-                ) 
+                )
             if "well_track" in rew_dict and self.mask_well_track:
                 # use well_track to mask out the contact reward
-                contact_rew = torch.where(rew_dict["well_track"], torch.zeros_like(contact_rew), contact_rew)   
-  
-            # rew += contact_rew
+                contact_rew = torch.where(rew_dict["well_track"], torch.zeros_like(contact_rew), contact_rew)
+
+                # rew += contact_rew
             rew_dict.update(contact_dict)
         
         if self.multiply_all_rew:
