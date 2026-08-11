@@ -80,9 +80,9 @@ def get_filtered_contact_force_from_mask(force, mask):
     - mask: (n_contacts, N, n_a, n_b) tensor of expanded mask, n_a is either num of geoms or num of links 
     Return:
     - summed force tensor of shape (N, n_a, n_b, 3) """
-    mask_expand = mask.unsqueeze(-1)
-    force_expand = force.unsqueeze(-2).unsqueeze(-2)
-    sum_force = (force_expand * mask_expand).sum(dim=0)
+    # Using einsum avoids materializing a huge 5D tensor in memory!
+    # force: (c, n, 3), mask: (c, n, a, b) -> output: (n, a, b, 3)
+    sum_force = torch.einsum('cnd, cnab -> nabd', force, mask.to(force.dtype))
     return sum_force
 
 
