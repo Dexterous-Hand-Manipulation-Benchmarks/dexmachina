@@ -121,43 +121,57 @@ class RewardModule:
         self.multiply_frame_contact = reward_cfg.get("multiply_frame_contact", True) 
         self.mask_zero_contact = reward_cfg.get("mask_zero_contact", True)
         self.contact_rew_function = reward_cfg.get("contact_rew_function", "exp")
-        self.load_demo(demo_data, retarget_data, device) 
+        self.load_demo(demo_data, retarget_data, device)
 
     def load_demo(self, demo_data, retarget_data, device):
         self.demo_tensors = dict()
         demo_keys = ["obj_pos", "obj_quat", "obj_arti"]
-        if self.contact_rew_weight > 0.0:
+        if self.contact_rew_weight > 0.0 and not self.use_retarget_contact:
             demo_keys += ["contact_links_left", "contact_links_right"]
-        
+
         for key in demo_keys:
-            assert key in demo_data, f"{key} not in demo_data" 
+            assert key in demo_data, f"{key} not in demo_data"
             self.demo_tensors[key] = torch.tensor(
                 demo_data[key], dtype=torch.float32, device=device
             )
 
+        # Load retargeted contacts for robot hand matching
+        if self.contact_rew_weight > 0.0 and self.use_retarget_contact:
+            for side in ['left', 'right']:
+                key = f"contact_links_{side}"
+                if retarget_data and side in retarget_data and 'contact_links' in retarget_data[side]:
+                    self.demo_tensors[key] = torch.tensor(
+                        retarget_data[side]['contact_links'], dtype=torch.float32, device=device
+                    )
+                elif key in demo_data:
+                    self.demo_tensors[key] = torch.tensor(
+                        demo_data[key], dtype=torch.float32, device=device
+                    )
+
         if self.use_imi_rew:
             for side in ['left', 'right']:
                 key = f"kpts_{side}"
-                self.demo_tensors[key] = torch.tensor(
-                    retarget_data[side]['kpts_data']['kpt_pos'], 
-                    dtype=torch.float32, device=device
-                )
+                if retarget_data and side in retarget_data and 'kpts_data' in retarget_data[side]:
+                    self.demo_tensors[key] = torch.tensor(
+                        retarget_data[side]['kpts_data']['kpt_pos'],
+                        dtype=torch.float32, device=device
+                    )
         if self.contact_rew_weight > 0.0 or (self.use_imi_rew and self.imi_wrist_weight > 0.0):
-            # load wrist pose for contact reward
             for side in ['left', 'right']:
                 key = f"wrist_pose_{side}"
-                if isinstance(retarget_data[side]['wrist_pose'], torch.Tensor):
-                    self.demo_tensors[key] = retarget_data[side]['wrist_pose'].clone().to(device)
-                else:
-                    self.demo_tensors[key] = torch.tensor(
-                        retarget_data[side]['wrist_pose'], dtype=torch.float32, device=device
-                    )
-        
-        # check all the data have the same first dim size 
+                if retarget_data and side in retarget_data and 'wrist_pose' in retarget_data[side]:
+                    if isinstance(retarget_data[side]['wrist_pose'], torch.Tensor):
+                        self.demo_tensors[key] = retarget_data[side]['wrist_pose'].clone().to(device)
+                    else:
+                        self.demo_tensors[key] = torch.tensor(
+                            retarget_data[side]['wrist_pose'], dtype=torch.float32, device=device
+                        )
+
         assert all(
-            [self.demo_tensors[key].shape[0] == self.demo_tensors["obj_pos"].shape[0] for key in self.demo_tensors.keys()]
+            [self.demo_tensors[key].shape[0] == self.demo_tensors["obj_pos"].shape[0] for key in
+             self.demo_tensors.keys()]
         ), f"First dim size mismatch: {[self.demo_tensors[key].shape[0] for key in self.demo_tensors.keys()]}"
-        self.demo_length = self.demo_tensors["obj_pos"].shape[0] 
+        self.demo_length = self.demo_tensors["obj_pos"].shape[0]
         print(f"Loaded demo data with length {self.demo_length}")
     
     def get_demo_length(self):  
@@ -396,102 +410,103 @@ class RewardModule:
             contact_dict['num_mismatch'] = num_mismatch
 
         return contact_rew, contact_dict
-    
+
     def compute_matched_contact_per_hand(
-        self,
-        contact_link_pos, # shape (N, num_obj_links, num_hand_links, 4)
-        contact_link_valid, # shape (N, num_obj_links, num_hand_links, 1)
-        episode_length_buf,
-        # wrist_pose, # shape (N, 7)
-        obj_pose, # shape (N, 7) 
-        demo_obj_pose,
-        side='left',
-        max_distance=1.0,
+            self,
+            contact_link_pos,  # shape (N, num_obj_links, num_hand_links, 4)
+            contact_link_valid,  # shape (N, num_obj_links, num_hand_links, 1)
+            episode_length_buf,
+            obj_pose,  # shape (N, 7)
+            demo_obj_pose,
+            side='left',
+            max_distance=1.0,
     ):
-        """ 
-        Instead of computing point cloud reward, here we assume demo contacts and policy contacts
-        are from the same set of dex hand links and hence each contact point has a matched target position in the demo 
-        """ 
-        demo_contacts = self.match_demo_state(f"contact_links_{side}", episode_length_buf) 
-        # NOTE the retargeted contacts are of shape (N, num_obj_parts=2, num_links, 4), first row is 'top' and second row is 'bottom'!
-        # need to flip the order since policy contact has object link bottom first 
-        demo_contacts = demo_contacts.clone()[:, [1, 0], :, :] # (N, num_obj_links, num_hand_links, 4)
-        assert demo_contacts.shape[1] == contact_link_pos.shape[1], f"Shape mismatch: {demo_contacts.shape} vs {contact_link_pos.shape}"
-        assert demo_contacts.shape[2] == contact_link_pos.shape[2], f"Shape mismatch: {contact_link_pos.shape} vs {demo_contacts.shape}"
-        demo_valids = demo_contacts[:, :, :, -1] > 0.0 # (part id is <= 0 if no contact)
-         
-        # need to reshape this to (N, num_obj_links * num_hand_links, 3) to do the transformation first
+        demo_contacts = self.match_demo_state(f"contact_links_{side}", episode_length_buf)
+
+        # --- VIEW FIX: Restore 4D representation (N, 2, num_links, 4) ---
+        if demo_contacts.dim() == 3:
+            num_obj_links = contact_link_pos.shape[1]
+            num_hand_links = contact_link_pos.shape[2]
+            demo_contacts = demo_contacts.view(-1, num_obj_links, num_hand_links, 4)
+
+        demo_contacts = demo_contacts.clone()[:, [1, 0], :, :]
+        assert demo_contacts.shape[1] == contact_link_pos.shape[
+            1], f"Shape mismatch: {demo_contacts.shape} vs {contact_link_pos.shape}"
+        assert demo_contacts.shape[2] == contact_link_pos.shape[
+            2], f"Shape mismatch: {contact_link_pos.shape} vs {demo_contacts.shape}"
+        demo_valids = demo_contacts[:, :, :, -1] > 0.0
+
         if self.retarget_objframe:
             bsize, nparts, nlinks = demo_contacts.shape[:3]
-            demo_pos_global = demo_contacts[:,:,:,:3].reshape(
+            demo_pos_global = demo_contacts[:, :, :, :3].reshape(
                 bsize, nparts * nlinks, 3
-            ) # (N, num_obj_links * num_hand_links, 3)
-            demo_pos = transform_contact(demo_pos_global, demo_obj_pose)        
-            demo_pos = demo_pos.reshape(bsize, nparts, nlinks, 3)  
+            )
+            demo_pos = transform_contact(demo_pos_global, demo_obj_pose)
+            demo_pos = demo_pos.reshape(bsize, nparts, nlinks, 3)
 
             policy_pos_global = contact_link_pos[:, :, :, :3].reshape(
                 bsize, nparts * nlinks, 3
-            ) # (N, num_obj_links, num_hand_links, 3)
+            )
             policy_pos = transform_contact(policy_pos_global, obj_pose)
-            # then reshape it back!
             policy_pos = policy_pos.reshape(bsize, nparts, nlinks, 3)
         else:
             demo_pos = demo_contacts[:, :, :, :3]
             policy_pos = contact_link_pos[:, :, :, :3]
-        
-        
+
         both_invalid_mask = torch.logical_not(demo_valids) & torch.logical_not(contact_link_valid)
-        # only one valid 
         one_valid_mask = torch.logical_xor(demo_valids, contact_link_valid)
-        # compute distance between demo and policy contact points
         dist = position_distance(demo_pos, policy_pos)
+
         if self.mask_zero_contact:
-            # if both invalid, set distance to 0
             dist = torch.where(both_invalid_mask, torch.ones_like(dist) * max_distance, dist)
         else:
-            # if both invalid, set distance to 0
             dist = torch.where(both_invalid_mask, torch.zeros_like(dist), dist)
-        # if one valid, set distance to a large value
-        dist = torch.where(one_valid_mask, torch.ones_like(dist) * max_distance, dist) # (B, 2, nlinks)
-        
-        # different ways to compute the distance: 
-        # if take mean, encourages all contacts to be close to the targets 
-        # if take min, encourages only one contact to be close to the target
-        # part_dist = torch.mean(dist, dim=-1) # (N, num_obj_links=2)  
-        return dist 
-    
+
+        dist = torch.where(one_valid_mask, torch.ones_like(dist) * max_distance, dist)
+        return dist
+
     def compute_matched_contact_reward(
-        self,
-        contacts_link_left, # shape (N, num_obj_links, num_hand_links) 
-        contacts_link_valid_left, # shape (N, num_obj_links, num_hand_links)
-        contacts_link_right,
-        contacts_link_valid_right,
-        obj_pose,
-        demo_obj_pose,
-        episode_length_buf,
+            self,
+            contacts_link_left,
+            contacts_link_valid_left,
+            contacts_link_right,
+            contacts_link_valid_right,
+            obj_pose,
+            demo_obj_pose,
+            episode_length_buf,
     ):
         rews = dict()
-        contact_rew = 0
+        # Initialize as a CUDA tensor of shape (num_envs,) instead of a Python float
+        contact_rew = torch.zeros(
+            episode_length_buf.shape[0],
+            device=episode_length_buf.device,
+            dtype=torch.float32
+        )
+
         for side, contacts, valids in zip(
-            ['left', 'right'],
-            [contacts_link_left, contacts_link_right],
-            [contacts_link_valid_left, contacts_link_valid_right]
+                ['left', 'right'],
+                [contacts_link_left, contacts_link_right],
+                [contacts_link_valid_left, contacts_link_valid_right]
         ):
+            if contacts is None or valids is None:
+                continue
+
             part_dist = self.compute_matched_contact_per_hand(
-                contacts, valids, episode_length_buf, 
+                contacts, valids, episode_length_buf,
                 obj_pose, demo_obj_pose, side=side
             )
-            for i, part in enumerate(['bottom', 'top']): 
+            for i, part in enumerate(['bottom', 'top']):
                 con_dist = part_dist[:, i]
                 if self.exp_kpt_first:
-                    con_rew = self.contact_dist_to_rew(con_dist, self.contact_rew_function).mean(dim=-1) 
+                    con_rew = self.contact_dist_to_rew(con_dist, self.contact_rew_function).mean(dim=-1)
                 else:
-                    con_rew = self.contact_dist_to_rew(con_dist.mean(dim=-1), self.contact_rew_function) 
+                    con_rew = self.contact_dist_to_rew(con_dist.mean(dim=-1), self.contact_rew_function)
                 rews[f"conrew_{side}_{part}"] = con_rew
                 rews[f"matched_condist_{side}_{part}"] = con_dist
-                contact_rew += con_rew
-        contact_rew /= 4.0
-        contact_rew *= self.contact_rew_weight
+                contact_rew = contact_rew + con_rew
+
+        # Preserves the exact 4.0 scaling factor from the Dexmachina codebase
+        contact_rew = (contact_rew / 4.0) * self.contact_rew_weight
         rews['con_rew'] = contact_rew
         return contact_rew, rews
 
