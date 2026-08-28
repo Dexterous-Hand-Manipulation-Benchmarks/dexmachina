@@ -7,10 +7,10 @@ from dexmachina.envs.reward_utils import position_distance, rotation_distance, c
 
 def get_reward_cfg(last_n_frame=-1):
     reward_cfg = {
-
-        "obj_pos_beta": 20.0,
-        "obj_rot_beta": 5.0,
-        "obj_arti_beta": 20.0,
+        # Task Tracking Sharpness (from task_rew_betas=[10.0, 1.0, 5.0])
+        "obj_pos_beta": 10.0,
+        "obj_rot_beta": 1.0,
+        "obj_arti_beta": 5.0,
         "obj_pos_weight": 2.0,
         "obj_rot_weight": 3.0,
         "obj_arti_weight": 5.0,
@@ -20,45 +20,56 @@ def get_reward_cfg(last_n_frame=-1):
         "multiply_all_rew": False,
         "task_rew_weight": 1.0,
 
+        # Keypoint & Wrist Imitation
         "exp_kpt_first": True,
-        "imi_rew_weight":  1.0,
-        "imi_wrist_weight": 0.0, # do a weighted avg between fingertip and wrist poses
+        "imi_rew_weight": 0.3,
+        "imi_wrist_weight": 0.5,
         "imi_wrist_rot_beta": 3.0,
         "imi_wrist_pos_beta": 10.0,
         "imi_fingertip_beta": 20.0,
 
-        "bc_rew_weight": 0.0,
+        # Behavioral Cloning Reward
+        "bc_rew_weight": 0.3,
         "bc_beta": 500.0,
 
-        "contact_rew_weight": 1.0,
-        "contact_rew_function": "exp", # exp or sigmoid
+        # Contact Matching Reward
+        "contact_rew_weight": 3.0,
+        "contact_rew_function": "exp",
         "wrist_frame_contact": True,
-        "contact_beta": 30.0,
+        "contact_beta": 10.0,
         "contact_a": 100.0,
         "contact_b": 5.0,
         "multiply_frame_contact": True,
-        "mask_zero_contact": True, # if both policy and demo has no contact, reward is 0 (1 if False)
+        "mask_zero_contact": True,
         "contact_phase_penalty": 0,
 
         "mask_well_track": False,
         "scale_well_track": 1.0,
-        "force_penalty": 2.0,
-        "action_penalty": 0.05,
+        "force_penalty": 0.1,
+        "action_penalty": 0.01,
 
         "objdex_baseline": False,
-        "use_retarget_contact": False,
-        "retarget_objframe": True, # if True, the contact is in the object frame, otherwise in the wrist frame
-
-    } 
+        "use_retarget_contact": True,
+        "retarget_objframe": True,
+    }
     return reward_cfg
 
 class RewardModule:
     def __init__(self, reward_cfg, demo_data, retarget_data, device):
 
-        reward_cfg["force_penalty"] = 2.0
-        reward_cfg["action_penalty"] = 0.05
-        reward_cfg["imi_rew_weight"] = 1.0
-        reward_cfg["contact_rew_weight"] = 1.0
+        reward_cfg["force_penalty"] = 0.1
+        reward_cfg["action_penalty"] = 0.01
+        reward_cfg["imi_rew_weight"] = 0.3
+        reward_cfg["imi_wrist_weight"] = 0.5
+        reward_cfg["contact_rew_weight"] = 3.0
+        reward_cfg["contact_beta"] = 10.0
+        reward_cfg["bc_rew_weight"] = 0.3
+        reward_cfg["bc_beta"] = 500.0
+        reward_cfg["use_retarget_contact"] = True
+        reward_cfg["retarget_objframe"] = True
+        reward_cfg["obj_pos_beta"] = 10.0
+        reward_cfg["obj_rot_beta"] = 1.0
+        reward_cfg["obj_arti_beta"] = 5.0
         print("\n" + "=" * 50)
         print("[DEBUG] ACTIVE REWARD CONFIGURATION:")
         print(f"  -> Force Penalty:   {reward_cfg.get('force_penalty')}")
