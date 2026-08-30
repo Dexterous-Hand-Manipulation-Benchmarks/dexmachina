@@ -700,6 +700,9 @@ class RewardModule:
         
         
         if self.cfg["force_penalty"] > 0.0 and contact_forces is not None: # shape (B, 2, num_links*2, 3)
+            # Correct for NaNs.
+            contact_forces = torch.nan_to_num(contact_forces, nan=0.0, posinf=500.0, neginf=-500.0)
+
             force_norm = torch.norm(contact_forces, dim=-1).flatten(start_dim=1) # shape (B, 2*num_links*2) -> this goes to up to 5k
             high_force = torch.where(force_norm > 500.0, force_norm - 500.0, torch.zeros_like(force_norm))
             high_force = torch.mean(high_force, dim=-1) # shape (B, )
