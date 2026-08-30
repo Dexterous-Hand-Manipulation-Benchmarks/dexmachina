@@ -128,7 +128,7 @@ def get_env_cfg(
         "early_reset_threshold": 0.0,
         "early_reset_interval": 5,
         "early_reset_aux_thres": dict(con=0, imi=0, bc=0),
-        "record_video": False,
+        "record_video": True,
         "render_segmentation": False,
         "texture_cardbox": False,
         "max_video_frames": 0,
@@ -177,8 +177,26 @@ class BaseEnv:
 
         self.num_envs = env_cfg['num_envs']
         self.max_video_frames = env_cfg['max_video_frames']
-        self.record_video = env_cfg['record_video']
+
+        # --- HARDCODE CAMERA FIX ---
+        self.record_video = True
+
+        # Unlock Hydra's strict dictionary if it's protecting the config
+        if type(env_cfg).__name__ == "DictConfig":
+            from omegaconf import OmegaConf
+            OmegaConf.set_struct(env_cfg, False)
+
+        if 'camera_kwargs' not in env_cfg or not env_cfg['camera_kwargs']:
+            env_cfg['camera_kwargs'] = {}
+        if 'front' not in env_cfg['camera_kwargs']:
+            env_cfg['camera_kwargs']['front'] = {
+                'res': (256, 256), 'pos': (0.0, -1.6, 2.2), 'lookat': (0.0, -0.1, 1.2), 'fov': 30
+            }
+        env_cfg['render_camera'] = 'front'
+        # ---------------------------
+
         self.render_segmentation = env_cfg.get('render_segmentation', False)
+
         self.max_episode_length = int(env_cfg['episode_length'])
         self.chunk_ep_length = env_cfg['chunk_ep_length']
         if self.chunk_ep_length > 0:
