@@ -625,15 +625,7 @@ class BaseEnv:
 
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
-            # Assure that final observation is captured before resetting env
-            if "final_obs" not in self.extras:
-                self.extras["final_obs"] = torch.zeros_like(self.obs_buf)
 
-            terminal_obs = self.get_observations()
-            if isinstance(terminal_obs, dict):
-                self.extras["final_obs"][reset_env_ids] = terminal_obs['policy'][reset_env_ids]
-            else:
-                self.extras["final_obs"][reset_env_ids] = terminal_obs[reset_env_ids]
             # only log cum. episode reward if that env_idx is DONE 
             rew_dict['episode_rew'] = self.cumulative_task_rew[reset_env_ids] 
             self.reset_idx(reset_env_ids)  # rew and obs will be resetted   
