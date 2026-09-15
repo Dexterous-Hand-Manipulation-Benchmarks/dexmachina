@@ -56,20 +56,6 @@ def get_reward_cfg(last_n_frame=-1):
 
 class RewardModule:
     def __init__(self, reward_cfg, demo_data, retarget_data, device):
-
-        reward_cfg["force_penalty"] = 0.1
-        reward_cfg["action_penalty"] = 0.01
-        reward_cfg["imi_rew_weight"] = 0.3
-        reward_cfg["imi_wrist_weight"] = 0.5
-        reward_cfg["contact_rew_weight"] = 3.0
-        reward_cfg["contact_beta"] = 10.0
-        reward_cfg["bc_rew_weight"] = 0.3
-        reward_cfg["bc_beta"] = 500.0
-        reward_cfg["use_retarget_contact"] = True
-        reward_cfg["retarget_objframe"] = True
-        reward_cfg["obj_pos_beta"] = 10.0
-        reward_cfg["obj_rot_beta"] = 1.0
-        reward_cfg["obj_arti_beta"] = 5.0
         print("\n" + "=" * 50)
         print("[DEBUG] ACTIVE REWARD CONFIGURATION:")
         print(f"  -> Force Penalty:   {reward_cfg.get('force_penalty')}")
@@ -217,21 +203,31 @@ class RewardModule:
                 self.obj_arti_weight * obj_arti_rew
                 )
             
-        # give a bonus if obj state is well tracked and articulation joint is open 
+        # give a bonus if obj state is well tracked and articulation joint is open
         well_track = (pos_dist < 0.005) & (rot_dist < 0.1) & (arti_dist < 0.1)  & (demo_arti > 0.1)
         if self.scale_well_track > 1.0:
             task_rew = torch.where(well_track, task_rew * self.scale_well_track, task_rew)
+
+        # Cross-implementation success metric, matching FastTD3's
+        # envs/FastTD3/dexmachina_wrapper.py exactly so eval/success_* compares
+        # like for like. NOTE: this is NOT the paper's ADD-based success (see
+        # add_success_* / auc_add), and the "2cm" label refers only to the
+        # position term -- rot/arti carry their own, looser thresholds.
+        success_2cm = (pos_dist < 0.02) & (rot_dist < 0.20) & (arti_dist < 0.10)
+        success_5cm = (pos_dist < 0.05) & (rot_dist < 0.35) & (arti_dist < 0.15)
 
         rew_dict = dict(
             pos_dist=pos_dist,
             rot_dist=rot_dist,
             arti_dist=arti_dist,
+            success_2cm=success_2cm,
+            success_5cm=success_5cm,
             obj_pos_rew=obj_pos_rew,
             obj_rot_rew=obj_rot_rew,
             obj_arti_rew=obj_arti_rew,
             task_rew=task_rew.clone(), # NOTE: otherwise it's the same tensor as the total reward
             well_track=well_track,
-        )  
+        )
 
         if self.last_n_frame > 0:
             # mask out rewards that are not from the last n frames
@@ -312,9 +308,9 @@ class RewardModule:
         if self.last_n_frame > 0:
             # mask out rewards that are not from the last n frames
             tomask = torch.where(
-                episode_length_buf < self.demo_length - self.last_n_frame, 
-                torch.zeros(imi_rew.shape, device=task_rew.device, dtype=torch.bool),
-                torch.ones(imi_rew.shape, device=task_rew.device, dtype=torch.bool)
+                episode_length_buf < self.demo_length - self.last_n_frame,
+                torch.zeros(imi_rew.shape, device=imi_rew.device, dtype=torch.bool),
+                torch.ones(imi_rew.shape, device=imi_rew.device, dtype=torch.bool)
                 )
             imi_rew[tomask] = 0.0
         return imi_rew, rew_dict 
@@ -420,6 +416,7 @@ class RewardModule:
             demo_obj_pose,
             side='left',
             max_distance=1.0,
+            return_valid=False,
     ):
         demo_contacts = self.match_demo_state(f"contact_links_{side}", episode_length_buf)
 
@@ -463,6 +460,8 @@ class RewardModule:
             dist = torch.where(both_invalid_mask, torch.zeros_like(dist), dist)
 
         dist = torch.where(one_valid_mask, torch.ones_like(dist) * max_distance, dist)
+        if return_valid:
+            return dist, demo_valids
         return dist
 
     def compute_matched_contact_reward(
@@ -483,6 +482,23 @@ class RewardModule:
             dtype=torch.float32
         )
 
+        num_terms = 0
+        # --- Diagnostics for why con_rew is small. compute_matched_contact_per_hand
+        # forces dist to max_distance (1.0) wherever NEITHER the demo nor the policy
+        # is touching, so a clip whose demo has contact on only a few (frame, link)
+        # pairs caps con_rew far below contact_rew_weight no matter how good the
+        # policy is. These three per-env scalars separate the two causes:
+        #   con_active_frac  fraction of (part, link) pairs the demo wants in contact
+        #   con_dist_active  mean matched distance over just those pairs (metres)
+        #   con_rew_ceiling  con_rew a policy matching every demo contact exactly
+        #                    would score -- the real target for the curriculum gate
+        n_envs = episode_length_buf.shape[0]
+        dev = episode_length_buf.device
+        valid_sum = torch.zeros(n_envs, device=dev)
+        valid_cnt = torch.zeros(n_envs, device=dev)
+        dist_sum = torch.zeros(n_envs, device=dev)
+        ceiling = torch.zeros(n_envs, device=dev)
+
         for side, contacts, valids in zip(
                 ['left', 'right'],
                 [contacts_link_left, contacts_link_right],
@@ -491,9 +507,9 @@ class RewardModule:
             if contacts is None or valids is None:
                 continue
 
-            part_dist = self.compute_matched_contact_per_hand(
+            part_dist, demo_valid = self.compute_matched_contact_per_hand(
                 contacts, valids, episode_length_buf,
-                obj_pose, demo_obj_pose, side=side
+                obj_pose, demo_obj_pose, side=side, return_valid=True
             )
             for i, part in enumerate(['bottom', 'top']):
                 con_dist = part_dist[:, i]
@@ -504,10 +520,28 @@ class RewardModule:
                 rews[f"conrew_{side}_{part}"] = con_rew
                 rews[f"matched_condist_{side}_{part}"] = con_dist
                 contact_rew = contact_rew + con_rew
+                num_terms += 1
+
+                v = demo_valid[:, i].to(con_dist.dtype)
+                valid_sum = valid_sum + v.sum(dim=-1)
+                valid_cnt = valid_cnt + v.shape[-1]
+                dist_sum = dist_sum + (con_dist * v).sum(dim=-1)
+                # perfect play: distance 0 where the demo wants contact, and the
+                # same max_distance elsewhere. Mirrors the exp_kpt_first branch.
+                best_dist = torch.where(
+                    v > 0, torch.zeros_like(con_dist), torch.ones_like(con_dist)
+                )
+                ceiling = ceiling + self.contact_dist_to_rew(
+                    best_dist, self.contact_rew_function
+                ).mean(dim=-1)
 
         # Preserves the exact 4.0 scaling factor from the Dexmachina codebase
         contact_rew = (contact_rew / 4.0) * self.contact_rew_weight
         rews['con_rew'] = contact_rew
+        if num_terms > 0:
+            rews['con_active_frac'] = valid_sum / valid_cnt.clamp(min=1.0)
+            rews['con_dist_active'] = dist_sum / valid_sum.clamp(min=1.0)
+            rews['con_rew_ceiling'] = (ceiling / num_terms) * self.contact_rew_weight
         return contact_rew, rews
 
     def compute_contact_reward(
