@@ -416,6 +416,10 @@ class BaseEnv:
         self.num_privileged_obs = None
         self.num_actions = self.action_dim # need for rsl
         self.rand_init_ratio = env_cfg.get('rand_init_ratio', 0.0) 
+        # ADD metric logging (see envs/add_metric.py). num_verts matches the
+        # offline compute_add.py default so the numbers are comparable.
+        self.log_add_metric = env_cfg.get('log_add_metric', False)
+        self.add_num_verts = int(env_cfg.get('add_num_verts', 500))
         self.initialize_value_buffers()
         
         # # NOTE! seems like scene must be built first
@@ -424,7 +428,21 @@ class BaseEnv:
         
         for name, obj in self.objects.items():
             obj.post_scene_build_setup()
-        
+
+        # ADD (average distance) metric: one sweep over the demo frames to cache
+        # each part's world pose, so per-step ADD can be logged during training.
+        # Uses the same vertex sampling as dexmachina/eval/compute_add.py.
+        self.add_metric = None
+        if self.log_add_metric and self.object is not None:
+            self.add_metric = self.object.setup_add_metric(
+                num_samples=self.add_num_verts
+            )
+            if self.add_metric is None:
+                print("[ADD] object has no demo trajectory; ADD logging disabled")
+            else:
+                print(f"[ADD] enabled: {self.add_metric.num_frames} demo frames, "
+                      f"{self.add_num_verts} verts/part")
+
         if self.use_curriculum:
             self.curriculum.post_scene_build_setup()
 
@@ -527,6 +545,9 @@ class BaseEnv:
                 self.episode_length_buf[i] = i % self.chunk_ep_length
 
         self.max_achieved_length = 0
+        # toggled off by the JAX wrapper while stepping eval rollouts, so eval
+        # episode ends don't get recorded as curriculum progress
+        self.record_curriculum = True
         self.actions = torch.zeros((self.num_envs, self.action_dim), device=self.device)
         self.last_actions = torch.zeros((self.num_envs, self.action_dim), device=self.device)
 
@@ -610,6 +631,20 @@ class BaseEnv:
         self.reset_buf[:] = self.reset_terminated | self.reset_time_outs
  
         rew_dict = self._get_rewards()
+
+        # ADD against the demo trajectory, per env, in metres. MUST be computed
+        # before reset_idx() below: that zeroes object.part_quat, and a
+        # zero quaternion makes matrix_from_quat divide by zero -> NaN, which
+        # then poisons the mean over all envs. It also zeroes
+        # episode_length_buf, which is the demo frame index we need.
+        # NOTE: this reflects whatever physics the object is currently under --
+        # while the curriculum's assistive gains are non-zero, part of the
+        # tracking is done by that controller and not by the policy.
+        add_dict = None
+        _add_metric = getattr(self, "add_metric", None)
+        if _add_metric is not None and _add_metric.ready:
+            add_dict = _add_metric.compute(self.episode_length_buf)
+
         if "log" not in self.extras:
             self.extras["log"] = dict() 
 
@@ -627,9 +662,15 @@ class BaseEnv:
         if len(reset_env_ids) > 0:
             # only log cum. episode reward if that env_idx is DONE 
             rew_dict['episode_rew'] = self.cumulative_task_rew[reset_env_ids] 
-            self.reset_idx(reset_env_ids)  # rew and obs will be resetted   
+            # record_curriculum is set False by the wrapper during eval rollouts:
+            # eval steps the same sim, so its episode ends would otherwise flood
+            # the curriculum's deques with phase-0-synchronized data
+            self.reset_idx(reset_env_ids, update_curriculum=self.record_curriculum)  # rew and obs will be resetted
         
         self.extras["log"].update(rew_dict) 
+        if add_dict is not None:
+            self.extras["log"].update(add_dict)
+
         if self.use_curriculum:
             rew_grads = self.curriculum.get_reward_grads()
             self.extras["log"].update(
@@ -897,15 +938,22 @@ class BaseEnv:
         avg_rew = rewards / self.max_episode_length
         return avg_rew.mean().item()
 
-    def reset_idx(self, env_idxs=[]):
+    def reset_idx(self, env_idxs=[], update_curriculum=True):
+        """
+        update_curriculum: only True for genuine episode-end resets. A whole-env
+        reset() interrupts every env mid-episode, so its partial progress and
+        partial cumulative rewards must not be recorded as completed episodes -
+        doing so poisons the curriculum's ep_lens / rew_deques statistics.
+        """
         if len(env_idxs) == 0:
-            return  
+            return
         self.randomization.on_reset_idx(env_idxs)
-        progressed = self.episode_length_buf[env_idxs] - self.episode_start_buf[env_idxs]
-        progressed_avg = torch.mean(progressed.float()).item()
-        self.max_achieved_length = int(self.max_achieved_length * 0.5 + progressed_avg * 0.5)
+        if update_curriculum:
+            progressed = self.episode_length_buf[env_idxs] - self.episode_start_buf[env_idxs]
+            progressed_avg = torch.mean(progressed.float()).item()
+            self.max_achieved_length = int(self.max_achieved_length * 0.5 + progressed_avg * 0.5)
 
-        if self.use_curriculum:
+        if self.use_curriculum and update_curriculum:
             episode_rewards = dict()
             if 'task' in self.reward_keys:
                 episode_rewards['task'] = self.normalize_episode_rew(self.cumulative_task_rew[env_idxs])
@@ -970,10 +1018,11 @@ class BaseEnv:
             self.contact_link_pos[env_idxs] = 0.0
             self.contact_link_valid[env_idxs] = False  
          
-    def reset(self): 
-        # reset all envs
+    def reset(self):
+        # reset all envs - these are interrupted mid-episode, so they must not be
+        # recorded as completed episodes in the curriculum's statistics
         env_idxs = torch.arange(self.num_envs)
-        self.reset_idx(env_idxs)  
+        self.reset_idx(env_idxs, update_curriculum=False)
         if self.use_rl_games:
             return self.get_observations(), dict()
         else:

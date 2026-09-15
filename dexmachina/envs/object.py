@@ -203,6 +203,32 @@ class ArticulatedObject:
             self.demo_dofs = torch.stack(demo_dofs, dim=0)
         self.post_built = True
 
+    def setup_add_metric(self, num_samples=500, seed=42):
+        """Precompute the demo part poses needed for the online ADD metric.
+
+        One sweep over the demo frames (the same state writes
+        post_scene_build_setup already does for actuated objects), recording
+        each part's world pose so ADD can be evaluated per env at every step.
+        Returns None if this object has no demo trajectory.
+        """
+        from dexmachina.envs.add_metric import ADDMetric
+
+        assert self.post_built, "call setup_add_metric after post_scene_build_setup"
+        if self.demo_states is None:
+            return None
+        metric = ADDMetric(self, num_samples=num_samples, seed=seed)
+        for i in range(self.demo_states.shape[0]):
+            _state = self.demo_states[i]
+            self.set_object_state(
+                root_pos=_state[:3][None].repeat(self.num_envs, 1),
+                root_quat=_state[3:7][None].repeat(self.num_envs, 1),
+                joint_qpos=_state[7:8][None].repeat(self.num_envs, 1),
+            )
+            metric.record_demo_frame()
+        metric.finalize()
+        self.add_metric = metric
+        return metric
+
     def set_demo_states(self, demo_data):
         obj_pos = demo_data["obj_pos"]
         obj_quat = demo_data["obj_quat"]
