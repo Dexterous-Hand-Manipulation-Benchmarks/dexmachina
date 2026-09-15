@@ -230,8 +230,10 @@ def get_all_env_cfg(args, device, load_retarget_data=True):
     }
     if args.overlay:
         env_kwargs['env_cfg']['env_spacing'] = (0.0, 0.0)  
-    if args.n_envs_per_row is not None:
+    if args.n_envs_per_row is not None and int(args.n_envs_per_row) > 0:
         env_kwargs['env_cfg']['n_envs_per_row'] = int(args.n_envs_per_row)
+    else:
+        env_kwargs['env_cfg']['n_envs_per_row'] = None
     return env_kwargs
 
 def get_common_argparser():
