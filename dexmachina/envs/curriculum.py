@@ -43,7 +43,7 @@ def get_curriculum_cfg(kwargs=dict()):
         "zero_epoch": 30000, # set all zeros once beyond this hardstop
         "dialback_ep_len": 50,
         "dialback_min_epochs": 500,
-        "dialback_ratios": dict(kp=0.98, kv=0.98, fr=0.98), # don't fully reset to prev gains, instead decay by this ratio 
+        "dialback_ratios": dict(kp=0.98, kv=0.98, fr=0.98), # don't fully reset to prev gains, instead decay by this ratio
     }
     # update with kwargs
     curr_cfg.update(kwargs)
@@ -235,9 +235,21 @@ class Curriculum:
         # print(f"Epoch {epoch_num}: Achieved length: {achieved_len} {self.num_epoch_since_last_decay}")
         if achieved_len < min_ep_len:
             if self.num_epoch_since_last_decay > max_past:
-                # dial back the gains
-                upper_gains = self.gain_history[-1]['gains']
-                lower_gains = self.gain_history[-1]['lower']
+                # gain_history is only appended when a decay actually happens, so
+                # before the first decay there is no previous gain level to return
+                # to -- the gains are still at their init values and dialback is a
+                # no-op. Previously this raised IndexError. It became reachable once
+                # curriculum epochs became a normalised progress counter: with a
+                # 10000-epoch budget, num_epoch_since_last_decay can exceed
+                # dialback_min_epochs (500) while the reward gates are still
+                # blocking the very first decay.
+                if not self.gain_history:
+                    return dialed
+                # copy: these dicts live in gain_history, and mutating them in
+                # place would corrupt the recorded history and alias curr_gains
+                # to it, compounding across repeated dialbacks.
+                upper_gains = dict(self.gain_history[-1]['gains'])
+                lower_gains = dict(self.gain_history[-1]['lower'])
                 for k in self.decay_terms:
                     if k in upper_gains:
                         ratio = ratios.get(k, 1.0)
@@ -298,7 +310,7 @@ class Curriculum:
                 self.rew_deques[k].append(val)
             self.deque_appends = 0 
         # self.achieved_length = achieved_length
-        self.ep_lens.append(achieved_length) 
+        self.ep_lens.append(achieved_length)
 
     def get_current_gains(self):
         ret_gains = self.curr_gains.copy()
@@ -324,7 +336,7 @@ class Curriculum:
                     lower = self.curr_gains_lower[key]
                     upper = self.curr_gains[key] 
                     # uniform from lower to upper, sample shape (num_envs, num_joints)
-                    rand_gains[key] = torch.rand((self.num_envs, self.obj_ndof), dtype=torch.float32) * (upper - lower) + lower   
+                    rand_gains[key] = torch.rand((self.num_envs, self.obj_ndof), dtype=torch.float32, device=self.object.device) * (upper - lower) + lower
         else:
             # same params for all 
             for key in self.decay_terms:
@@ -399,13 +411,20 @@ class Curriculum:
                     self.curr_gains_lower[key] = 0.0
                 reason += f"Epoch {epoch_num}: Gains set to zero"  
                 gains_decayed = True 
+                self.reset_object_gains()
             return zero_gains, gains_decayed, reason 
         
-        if zero_gains or not learning_stablized:
-            return zero_gains, gains_decayed, reason 
-        
-        # decide if need to dial back the gains
-        dialed_back = self.determine_dialback(epoch_num) 
+        if zero_gains:
+            return zero_gains, gains_decayed, reason
+
+        # decide if need to dial back the gains - this must be checked independent
+        # of `learning_stablized`, since that already requires achieved_len to
+        # clear the (higher) ep_len_gate; gating dialback behind it made its own
+        # (lower) dialback_ep_len check impossible to ever be true.
+        dialed_back = self.determine_dialback(epoch_num)
+        if not dialed_back and not learning_stablized:
+            return zero_gains, gains_decayed, reason
+
         if dialed_back:
             print(f"Epoch {epoch_num}: Dialed back gains")
             gains_decayed = True # if the gains are dialed back, don't append to the history
