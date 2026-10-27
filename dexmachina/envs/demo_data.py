@@ -84,7 +84,9 @@ def load_genesis_retarget_data(
     if data_fname.endswith(".npy"):
         data = np.load(data_fname, allow_pickle=True).item()
     else:
-        data = torch.load(data_fname, weights_only=False)
+        # The released .pt files hold CUDA tensors; map them to CPU on machines without CUDA.
+        map_location = None if torch.cuda.is_available() else "cpu"
+        data = torch.load(data_fname, weights_only=False, map_location=map_location)
         loaded_tensor = True 
 
     demo_data = data["demo_data"] 
