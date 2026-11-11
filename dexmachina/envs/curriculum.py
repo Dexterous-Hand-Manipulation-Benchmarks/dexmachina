@@ -119,6 +119,10 @@ class Curriculum:
         self.max_episode_length = max_episode_length
         # self.achieved_length = achieved_length # need to update this from env!
         self.seed = curr_cfg['seed']
+        # Epochs (not set_curriculum calls) since the last gain change. Wrappers that map training
+        # progress onto epochs may skip epochs or repeat them, so counting calls would make the
+        # 40-epoch spacing and dialback_min_epochs mean something different for every algorithm.
+        self.last_decay_epoch = 0
         self.num_epoch_since_last_decay = 0
         self.num_epoch_since_zero = 0
         self.resample_every_epoch = curr_cfg['resample_every_epoch'] 
@@ -392,7 +396,8 @@ class Curriculum:
     def set_curriculum(self, epoch_num):
         # if gains are already zero, no need to reset
         self.update_reward_grads()
-        self.num_epoch_since_last_decay += 1
+        # Identical to counting calls when called once per epoch (rl_games), correct otherwise.
+        self.num_epoch_since_last_decay = epoch_num - self.last_decay_epoch
         learning_stablized, reason = self.determine_decay(epoch_num) 
         zero_gains = True 
         for key in self.decay_terms:
@@ -453,7 +458,8 @@ class Curriculum:
             self.ep_lens.clear()
             if self.decay_solimp:
                 self.reset_solimp()
-            self.deque_appends = 0 
+            self.deque_appends = 0
+            self.last_decay_epoch = epoch_num
             self.num_epoch_since_last_decay = 0
         elif self.resample_every_epoch > 0 and epoch_num % self.resample_every_epoch == 0:
             self.reset_object_gains()
