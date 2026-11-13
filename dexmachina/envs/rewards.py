@@ -102,7 +102,7 @@ class RewardModule:
         self.contact_beta = reward_cfg.get("contact_beta", 10.0)
         self.contact_a = reward_cfg.get("contact_a", 100.0)
         self.contact_b = reward_cfg.get("contact_b", 5.0)
-        self.sigmoid_offset = torch.tensor(-1 / (1.0 + np.exp(-self.contact_b)), device=device) + 1.0
+        self.sigmoid_offset = torch.tensor(1.0 - 1 / (1.0 + np.exp(-self.contact_b)), dtype=torch.float32, device=device)
         self.contact_phase_penalty = reward_cfg.get("contact_phase_penalty", 0.0)
         self.multiply_frame_contact = reward_cfg.get("multiply_frame_contact", True) 
         self.mask_zero_contact = reward_cfg.get("mask_zero_contact", True)
