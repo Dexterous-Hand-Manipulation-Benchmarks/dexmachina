@@ -5,15 +5,22 @@ after the step's time counter advanced and before the reset (the state after ste
 step is scored before its reset). The scorer turns the finished `Trajectory` into every eval metric.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 
 from dexmachina.envs.add_metric import ADD_AUC_THRESHOLDS, ADD_PARTS, compute_auc
 
+if TYPE_CHECKING:
+    import torch
+
+    from dexmachina.envs.base_env import BaseEnv
+
+# The per-env ADD of a part in `extras["log"]` after a step (base_env.py).
+ADD_LOG_KEY = "add_{part}"
 SUCCESS_2CM_M = 0.02
 SUCCESS_5CM_M = 0.05
 # Marks an env whose NaN mask was never set in `Trajectory.nan_from`.
@@ -156,6 +163,83 @@ class EvalRecorder:
         record.object_root_quat[nan_env] = np.nan
         record.object_joint_pos[nan_env] = np.nan
         return record
+
+
+class _PreResetTap:
+    """Copies the object state and the env's counters inside a step, before the reset overwrites them.
+
+    `BaseEnv.step` computes the ADD right after `_compute_intermediate_values`, so the state read there is the one
+    that was scored.
+    """
+
+    def __init__(self, env: "BaseEnv") -> None:
+        self.env = env
+        self.root_pos: FloatArray = np.empty(0)
+        self.root_quat: FloatArray = np.empty(0)
+        self.joint_pos: FloatArray = np.empty(0)
+        self.dropped: BoolArray = np.empty(0, dtype=np.bool_)
+        self.episode_length: IntArray = np.empty(0, dtype=np.int64)
+        self.nan_mask: BoolArray = np.empty(0, dtype=np.bool_)
+        self._compute_intermediate_values: Callable[[], None] = env._compute_intermediate_values  # pyright: ignore[reportPrivateUsage]
+        env._compute_intermediate_values = self._tapped  # pyright: ignore[reportPrivateUsage]
+
+    def release(self) -> None:
+        self.env._compute_intermediate_values = self._compute_intermediate_values  # pyright: ignore[reportPrivateUsage]
+
+    def _tapped(self) -> None:
+        self._compute_intermediate_values()
+        obj = self.env.object
+        assert obj is not None
+        self.root_pos = obj.root_pos.detach().cpu().numpy().astype(np.float64)
+        self.root_quat = obj.root_quat.detach().cpu().numpy().astype(np.float64)
+        self.joint_pos = obj.dof_pos.detach().cpu().numpy().astype(np.float64)
+        # The same test as BaseEnv._get_dones; under is_eval it is a record only, not a reset.
+        self.dropped = (obj.root_pos[:, 2] < self.env.table_height).detach().cpu().numpy()
+        self.episode_length = self.env.episode_length_buf.detach().cpu().numpy().astype(np.int64)
+        self.nan_mask = self.env.nan_envs.detach().cpu().numpy().copy()
+
+
+def rollout_episode(
+    env: "BaseEnv",
+    next_actions: "Callable[[], torch.Tensor]",
+    hand: str,
+    clip: str,
+    spec_hash: str,
+    dexmachina_sha: str,
+) -> Trajectory:
+    """Runs one eval episode of an env from `make_eval_env` and records it; `next_actions` gives each step's actions."""
+    if env.object is None or env.object.demo_states is None:
+        raise ValueError(
+            f"the env for {hand}/{clip} has no object with a demo trajectory, so there is no ADD to record. "
+            "Evaluate a spec with an object and a retargeted clip."
+        )
+    num_steps: int = env.max_episode_length
+    num_demo_frames: int = env.object.demo_states.shape[0]
+    recorder = EvalRecorder(num_steps, env.num_envs, num_demo_frames)
+    tap = _PreResetTap(env)
+    env.reset()
+    try:
+        for _ in range(num_steps):
+            _, _, _, time_outs, extras = env.step(next_actions())
+            add = np.stack(
+                [extras["log"][ADD_LOG_KEY.format(part=part)].detach().cpu().numpy() for part in ADD_PARTS], axis=-1
+            )
+            recorder.record(
+                StepRecord(
+                    object_root_pos=tap.root_pos,
+                    object_root_quat=tap.root_quat,
+                    object_joint_pos=tap.joint_pos,
+                    add=add.astype(np.float64),
+                    nan_mask=tap.nan_mask,
+                    reset_mask=time_outs.detach().cpu().numpy().copy(),
+                    dropped=tap.dropped,
+                    # The env's counter is not clamped to the last demo frame at the last step; ADDMetric clamps it.
+                    demo_frame=np.minimum(tap.episode_length, num_demo_frames - 1),
+                )
+            )
+    finally:
+        tap.release()
+    return recorder.trajectory(hand, clip, spec_hash, dexmachina_sha)
 
 
 @dataclass(frozen=True)
