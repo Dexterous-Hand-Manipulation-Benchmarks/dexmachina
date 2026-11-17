@@ -22,13 +22,17 @@ a separate env whose gains are zeroed permanently (make_dexmachina_env
 eval_mode=True).
 """
 
+from collections.abc import Sequence
+
 import numpy as np
+import numpy.typing as npt
 import torch
 
 from dexmachina.envs.math_utils import matrix_from_quat
 
 # Same thresholds the offline script uses: np.arange(0.01, 0.1, 0.01)
 ADD_AUC_THRESHOLDS = tuple(float(t) for t in np.arange(0.01, 0.1, 0.01))
+ADD_PARTS = ("top", "bottom")
 
 
 def transform_vertices(verts, pose):
@@ -43,7 +47,7 @@ def transform_vertices(verts, pose):
 class ADDMetric:
     """Per-env ADD against the demo trajectory, computed from live part poses."""
 
-    def __init__(self, obj, num_samples: int = 500, seed: int = 42, parts=("top", "bottom")):
+    def __init__(self, obj, num_samples: int = 500, seed: int = 42, parts=ADD_PARTS):
         self.obj = obj
         self.parts = tuple(parts)
         self.num_samples = num_samples
@@ -124,7 +128,7 @@ class ADDMetric:
         return out
 
 
-def compute_auc(add_values, thresholds=ADD_AUC_THRESHOLDS) -> float:
+def compute_auc(add_values: npt.ArrayLike, thresholds: Sequence[float] = ADD_AUC_THRESHOLDS) -> float:
     """AUC of the accuracy-vs-threshold curve, matching compute_add.py.
 
     ``add_values`` is a flat array of per-(env, frame) ADD values. The x axis is
