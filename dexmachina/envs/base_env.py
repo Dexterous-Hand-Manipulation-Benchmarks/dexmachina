@@ -759,6 +759,10 @@ class BaseEnv:
             timeout = self.episode_length_buf >= self.max_episode_length  # returns true for end of episode
  
         timeout = timeout | self.nan_envs
+        # What this call decided, per cause; DexMachinaVecEnv reports it as the reason an episode ended.
+        self.fell_off_mask = torch.zeros_like(timeout)
+        self.early_reset_overrides = torch.zeros_like(timeout)
+        self.early_reset_mask = torch.zeros_like(timeout)
         if self.is_eval:
             return timeout, timeout # always let it run to last frame for eval
         
@@ -767,17 +771,17 @@ class BaseEnv:
         if self.n_objects == 1:
             first_obj = self.objects[self.object_names[0]]
             object_fell_off = first_obj.root_pos[:, 2] < self.table_height
+        self.fell_off_mask = object_fell_off
         
         need_reset = timeout | object_fell_off | self.nan_envs
         
         if self.early_reset_threshold > 0.0:
             # early reset curriculum  
             for interval in range(0, self.max_episode_length, self.early_reset_interval):
-                need_reset = torch.where(
-                    (stepped_length > interval),
-                    self.cumulative_task_rew < self.early_reset_threshold * interval,
-                    need_reset
-                ) 
+                applies = stepped_length > interval
+                below = self.cumulative_task_rew < self.early_reset_threshold * interval
+                need_reset = torch.where(applies, below, need_reset)
+                self._record_early_reset(applies, below)
         
         for key, cum_rew in zip(
             ['con', 'imi', 'bc'],
@@ -786,10 +790,16 @@ class BaseEnv:
             thres = self.early_reset_aux_thres.get(key, 0.0)
             if thres > 0.0:
                 for interval in range(0, self.max_episode_length, 20):   
-                    need_reset = torch.where(
-                        (stepped_length > interval), cum_rew < thres * interval, need_reset
-                    )
+                    applies = stepped_length > interval
+                    below = cum_rew < thres * interval
+                    need_reset = torch.where(applies, below, need_reset)
+                    self._record_early_reset(applies, below)
         return need_reset, timeout
+
+    def _record_early_reset(self, applies, below):
+        """Tracks which envs an early-reset check decided (applies) and whether the last decision was a reset."""
+        self.early_reset_overrides = self.early_reset_overrides | applies
+        self.early_reset_mask = torch.where(applies, below, self.early_reset_mask)
     
     def prepare_sliced_contact(self, source='policy', part='top', side='left'):
         """ this does not have to always return the same shape """
