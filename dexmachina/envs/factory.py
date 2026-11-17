@@ -1,8 +1,8 @@
 """Build a DexMachina env from an `EnvSpec` and check that the built env uses what the spec says."""
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
-from typing import Any
+from dataclasses import dataclass, fields, replace
+from typing import Any, Protocol, cast
 
 from dexmachina.envs.base_env import BaseEnv
 from dexmachina.envs.constructors import get_all_env_cfg
@@ -87,6 +87,13 @@ def verify_applied_config(env: BaseEnv, expected: AppliedEnvConfig) -> None:
         raise ValueError("dexmachina env does not use the configured values: " + "; ".join(mismatches))
 
 
+def build_env_kwargs(spec: EnvSpec, device: str, reward_overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """The BaseEnv keyword arguments for the spec; reward_overrides set reward keys that have no command line flag."""
+    env_kwargs = get_all_env_cfg(spec.to_args(), device=device)
+    env_kwargs["reward_cfg"].update(reward_overrides)
+    return env_kwargs
+
+
 def make_env(spec: EnvSpec, device: str, reward_overrides: Mapping[str, Any]) -> BaseEnv:
     """Builds the env for the spec; reward_overrides set reward keys that have no command line flag.
 
@@ -94,10 +101,106 @@ def make_env(spec: EnvSpec, device: str, reward_overrides: Mapping[str, Any]) ->
     from the spec value (e.g. env_cfg["use_contact_reward"]), so an override that disagrees with the spec can make
     the read-back raise.
     """
-    env_kwargs = get_all_env_cfg(spec.to_args(), device=device)
-    reward_cfg: dict[str, Any] = env_kwargs["reward_cfg"]
-    reward_cfg.update(reward_overrides)
+    env_kwargs = build_env_kwargs(spec, device, reward_overrides)
     env = BaseEnv(**env_kwargs)
     cached_reward_keys = [key for key in reward_overrides if hasattr(env.reward_module, key)]
-    verify_applied_config(env, AppliedEnvConfig.expected(spec, reward_cfg, cached_reward_keys))
+    verify_applied_config(env, AppliedEnvConfig.expected(spec, env_kwargs["reward_cfg"], cached_reward_keys))
+    return env
+
+
+class ObjectInternals(Protocol):
+    actuated: bool
+
+
+class AddMetricInternals(Protocol):
+    ready: bool
+
+
+class EvalEnvInternals(Protocol):
+    """The parts of `BaseEnv` that the eval read-back reads (BaseEnv itself is untyped)."""
+
+    is_eval: bool
+    early_reset_threshold: float
+    rand_init_ratio: float
+    rand_cfg: Mapping[str, Any]
+    num_envs: int
+    object: ObjectInternals | None
+    add_metric: AddMetricInternals | None
+    record_curriculum: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedEvalConfig:
+    """The settings of a built env that the evaluation protocol depends on."""
+
+    is_eval: bool
+    early_reset_threshold: float
+    rand_init_ratio: float
+    randomized: bool
+    num_envs: int
+    object_actuated: bool
+    add_metric_ready: bool
+    record_curriculum: bool
+
+    @classmethod
+    def read_from(cls, env: EvalEnvInternals) -> "AppliedEvalConfig":
+        return cls(
+            is_eval=env.is_eval,
+            early_reset_threshold=env.early_reset_threshold,
+            rand_init_ratio=env.rand_init_ratio,
+            randomized=env.rand_cfg["randomize"],
+            num_envs=env.num_envs,
+            object_actuated=env.object is not None and env.object.actuated,
+            add_metric_ready=env.add_metric is not None and env.add_metric.ready,
+            record_curriculum=env.record_curriculum,
+        )
+
+    def mismatches(self, applied: "AppliedEvalConfig") -> list[str]:
+        """One "name: expected X, applied Y" line per differing value."""
+        return [
+            f"{field.name}: expected {getattr(self, field.name)}, applied {getattr(applied, field.name)}"
+            for field in fields(self)
+            if getattr(self, field.name) != getattr(applied, field.name)
+        ]
+
+
+EVAL_CONFIG = AppliedEvalConfig(
+    is_eval=True,
+    early_reset_threshold=0.0,
+    rand_init_ratio=0.0,
+    randomized=False,
+    num_envs=1,
+    object_actuated=False,
+    add_metric_ready=True,
+    record_curriculum=False,
+)
+
+
+def make_eval_env(spec: EnvSpec, device: str) -> BaseEnv:
+    """Builds the single-env, unassisted, reset-free env that evaluation rolls out, from the training spec.
+
+    The episode always runs to the last demo frame (`is_eval`), the object has no assistive gains, the online ADD
+    metric is attached, and the env never feeds the curriculum. Call `env.reset()` before every episode.
+    """
+    if spec.maniptrans:
+        raise ValueError(
+            "make_eval_env does not support ManipTrans specs: its curriculum terminates episodes early even under "
+            "is_eval, so an episode would not run to the last demo frame. Evaluate with a spec without maniptrans."
+        )
+    eval_spec = replace(spec, num_envs=1, actuate_object=False, rand_init_ratio=0.0, early_reset_threshold=0.0)
+    env_kwargs = build_env_kwargs(eval_spec, device, {})
+    # is_eval is a dead field of the spec and no spec field reaches the ADD metric or randomisation, so set them here.
+    env_kwargs["env_cfg"]["is_eval"] = True
+    env_kwargs["env_cfg"]["log_add_metric"] = True
+    env_kwargs["rand_cfg"]["randomize"] = False
+    env = BaseEnv(**env_kwargs)
+    verify_applied_config(env, AppliedEnvConfig.expected(eval_spec, env_kwargs["reward_cfg"], []))
+    env.record_curriculum = False
+    mismatches = EVAL_CONFIG.mismatches(AppliedEvalConfig.read_from(cast(EvalEnvInternals, env)))
+    if mismatches:
+        raise ValueError(
+            "the eval env does not have the settings the evaluation protocol needs: " + "; ".join(mismatches) + ". "
+            "Without them the rollout would be assisted, reset early or randomised, and its scores not comparable. "
+            "Likely cause: dexmachina changed how these settings are read; update make_eval_env to match."
+        )
     return env
