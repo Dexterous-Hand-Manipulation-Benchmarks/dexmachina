@@ -541,7 +541,7 @@ class BaseRobot:
 
         for k, scale in self.obs_scale.items():
             if k in obs_dict:
-                obs_dict[k] *= scale 
+                obs_dict[k] = obs_dict[k] * scale
         return obs_dict  
     
     def compute_obs_dim(self): 
