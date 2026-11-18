@@ -7,7 +7,7 @@ step is scored before its reset). The scorer turns the finished `Trajectory` int
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -25,6 +25,11 @@ SUCCESS_2CM_M = 0.02
 SUCCESS_5CM_M = 0.05
 # Marks an env whose NaN mask was never set in `Trajectory.nan_from`.
 NEVER_NAN = -1
+# BaseEnv's reset and step with use_rl_games (its default): the observation dict comes first.
+EnvReset = Callable[[], "tuple[dict[str, torch.Tensor], dict[str, Any]]"]
+EnvStep = Callable[
+    ["torch.Tensor"], "tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]"
+]
 
 FloatArray = npt.NDArray[np.floating[Any]]
 IntArray = npt.NDArray[np.integer[Any]]
@@ -201,13 +206,16 @@ class _PreResetTap:
 
 def rollout_episode(
     env: "BaseEnv",
-    next_actions: "Callable[[], torch.Tensor]",
+    next_actions: "Callable[[torch.Tensor], torch.Tensor]",
     hand: str,
     clip: str,
     spec_hash: str,
     dexmachina_sha: str,
 ) -> Trajectory:
-    """Runs one eval episode of an env from `make_eval_env` and records it; `next_actions` gives each step's actions."""
+    """Runs one eval episode of an env from `make_eval_env` and records it.
+
+    `next_actions` maps the observation before each step to that step's actions.
+    """
     if env.object is None or env.object.demo_states is None:
         raise ValueError(
             f"the env for {hand}/{clip} has no object with a demo trajectory, so there is no ADD to record. "
@@ -217,10 +225,11 @@ def rollout_episode(
     num_demo_frames: int = env.object.demo_states.shape[0]
     recorder = EvalRecorder(num_steps, env.num_envs, num_demo_frames)
     tap = _PreResetTap(env)
-    env.reset()
+    env_step = cast(EnvStep, env.step)
+    observations, _ = cast(EnvReset, env.reset)()
     try:
         for _ in range(num_steps):
-            _, _, _, time_outs, extras = env.step(next_actions())
+            observations, _, _, time_outs, extras = env_step(next_actions(observations["policy"]))
             add = np.stack(
                 [extras["log"][ADD_LOG_KEY.format(part=part)].detach().cpu().numpy() for part in ADD_PARTS], axis=-1
             )
