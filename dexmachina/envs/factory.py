@@ -1,7 +1,9 @@
 """Build a DexMachina env from an `EnvSpec` and check that the built env uses what the spec says."""
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Any, Protocol, cast
 
 from dexmachina.envs.base_env import BaseEnv
@@ -176,6 +178,34 @@ EVAL_CONFIG = AppliedEvalConfig(
 )
 
 
+# Spec fields that cannot change the eval rollout, left out of `task_hash` so that every seed and method trained on
+# one task shares its hash: display and recording, the seed, and the object-gain curriculum (the eval object is not
+# actuated). Leaving a field out on purpose: a field missing here splits one task into two hashes, which shows; a
+# field wrongly listed here would merge two tasks silently.
+NOT_IN_TASK_HASH = frozenset(
+    {
+        "vis", "overlay", "n_envs_per_row", "show_markers", "show_kpts", "record_video", "render_camera", "raytrace",
+        "record_interval", "show_fps", "color_object", "vis_contact", "seed",
+        "interval", "first_ratio", "first_stop_iter", "second_stop_iter", "kp_init", "kv_init", "force_range_init",
+        "max_epochs", "num_zero_epoch", "curr_schedule", "fixed_mode", "decay_rew", "wait_epochs", "decrease_rew",
+        "curr_rew_thres", "deque_freq", "grad_threshold", "gain_mode", "uniform_mode", "upper_ratios",
+        "lower_ratios", "deque_len", "resample_every_epoch", "skip_grad", "dialback_ep_len", "dialback_min_epochs",
+        "dialback_ratios",
+    }
+)  # fmt: skip
+TASK_HASH_HEX_DIGITS = 12
+
+
+def _eval_spec(spec: EnvSpec) -> EnvSpec:
+    return replace(spec, num_envs=1, actuate_object=False, rand_init_ratio=0.0, early_reset_threshold=0.0)
+
+
+def task_hash(spec: EnvSpec) -> str:
+    """Names the eval task a training spec is evaluated on: equal for specs whose eval rollouts can only be equal."""
+    task = {name: value for name, value in asdict(_eval_spec(spec)).items() if name not in NOT_IN_TASK_HASH}
+    return hashlib.sha256(json.dumps(task, sort_keys=True).encode()).hexdigest()[:TASK_HASH_HEX_DIGITS]
+
+
 def make_eval_env(spec: EnvSpec, device: str) -> BaseEnv:
     """Builds the single-env, unassisted, reset-free env that evaluation rolls out, from the training spec.
 
@@ -187,7 +217,12 @@ def make_eval_env(spec: EnvSpec, device: str) -> BaseEnv:
             "make_eval_env does not support ManipTrans specs: its curriculum terminates episodes early even under "
             "is_eval, so an episode would not run to the last demo frame. Evaluate with a spec without maniptrans."
         )
-    eval_spec = replace(spec, num_envs=1, actuate_object=False, rand_init_ratio=0.0, early_reset_threshold=0.0)
+    if not spec.use_rl_games:
+        raise ValueError(
+            "make_eval_env needs a spec with use_rl_games=True: the eval rollout reads the policy observation from the "
+            "observation dict that only the rl_games step returns. Set use_rl_games=True in the EnvSpec."
+        )
+    eval_spec = _eval_spec(spec)
     env_kwargs = build_env_kwargs(eval_spec, device, {})
     # is_eval is a dead field of the spec and no spec field reaches the ADD metric or randomisation, so set them here.
     env_kwargs["env_cfg"]["is_eval"] = True

@@ -6,6 +6,7 @@ default are defined once, here.
 
 import argparse
 import dataclasses
+import json
 from dataclasses import dataclass, field
 from typing import Any, cast, get_args, get_origin, get_type_hints
 
@@ -162,6 +163,25 @@ class EnvSpec:
         """The namespace the parser produces for these settings."""
         values = {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
         return argparse.Namespace(**{name: list(v) if isinstance(v, tuple) else v for name, v in values.items()})
+
+    def to_json(self) -> str:
+        return json.dumps(dataclasses.asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_json(cls, text: str) -> "EnvSpec":
+        """The spec `to_json` wrote; every field must be present, so nothing silently takes today's default."""
+        values: dict[str, Any] = json.loads(text)
+        names = {f.name for f in dataclasses.fields(cls)}
+        missing, unknown = sorted(names - values.keys()), sorted(values.keys() - names)
+        if missing or unknown:
+            raise ValueError(
+                f"The saved EnvSpec does not match this dexmachina's EnvSpec: missing fields {missing}, unknown fields "
+                f"{unknown}. EnvSpec changed since the spec was saved, so a default would stand in for the value the "
+                "run used. Add each missing field with the value the run used (or remove the unknown ones) and load "
+                "again."
+            )
+        kwargs: dict[str, Any] = {name: tuple(v) if isinstance(v, list) else v for name, v in values.items()}
+        return cls(**kwargs)
 
 
 def add_env_arguments(parser: argparse.ArgumentParser) -> None:
