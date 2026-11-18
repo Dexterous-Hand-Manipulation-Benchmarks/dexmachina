@@ -6,7 +6,7 @@ step is scored before its reset). The scorer turns the finished `Trajectory` int
 """
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -34,6 +34,15 @@ EnvStep = Callable[
 FloatArray = npt.NDArray[np.floating[Any]]
 IntArray = npt.NDArray[np.integer[Any]]
 BoolArray = npt.NDArray[np.bool_]
+# Turns the AUC of each part into one value. `auc_add` (the mean) stays fixed: it is the number methods are
+# compared on.
+PartAggregation = Callable[[Mapping[str, float]], float]
+PART_AGGREGATIONS: Mapping[str, PartAggregation] = {
+    "median": lambda auc: float(np.median(list(auc.values()))),
+    "min": lambda auc: float(min(auc.values())),
+    "max": lambda auc: float(max(auc.values())),
+    "std": lambda auc: float(np.std(list(auc.values()))),
+}
 
 
 def paired_demo_frame(step: int, num_demo_frames: int) -> int:
@@ -263,15 +272,18 @@ class EvalScore:
     success_5cm: float
     nan_rate: float
     drop_rate: float
+    # Each of the caller's `part_aggregations` applied to `auc_add_part`, under the caller's name for it.
+    auc_add_aggregated: Mapping[str, float] = field(default_factory=dict[str, float])
 
 
-def score(trajectory: Trajectory) -> EvalScore:
+def score(trajectory: Trajectory, part_aggregations: Mapping[str, PartAggregation] | None = None) -> EvalScore:
     """Score a trajectory over all (env, frame) values; a NaN frame is a miss at every threshold.
 
     `auc_add` is the paper's definition: AUC over `ADD_AUC_THRESHOLDS` (strict `<`) per part, then the mean over
     parts. `auc_add_of_mean` takes the AUC of the part-averaged ADD instead (REPPO's online definition).
     `mean_add` averages the frames before each env's first NaN. The state after the last step is scored against the
     last demo frame, which the env pairs twice; frame 0 is never scored.
+    `part_aggregations` adds more summaries of the per-part AUCs: entries of `PART_AGGREGATIONS` or any function.
     """
     num_steps = trajectory.add.shape[0]
     scored = np.arange(num_steps)[:, None] < _nan_start(trajectory.nan_from, num_steps)[None, :]
@@ -287,6 +299,7 @@ def score(trajectory: Trajectory) -> EvalScore:
         success_5cm=_success_rate(add, SUCCESS_5CM_M),
         nan_rate=float((trajectory.nan_from != NEVER_NAN).mean()),
         drop_rate=float((trajectory.dropped & scored).any(axis=0).mean()),
+        auc_add_aggregated={name: aggregate(per_part) for name, aggregate in (part_aggregations or {}).items()},
     )
 
 
