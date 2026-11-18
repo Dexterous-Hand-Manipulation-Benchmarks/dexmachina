@@ -40,7 +40,7 @@ def paired_demo_frame(step: int, num_demo_frames: int) -> int:
     """The demo frame the env pairs with the state after `step` (0-based): t + 1, clamped like `ADDMetric.compute`.
 
     A clip of F frames has episode length F, so the last step pairs with frame F - 1 for the second time and frame 0
-    is never scored (the convention of decision 005 rule 2, kept as the env defines it).
+    is never scored (the team's scoring convention, kept as the env defines it).
     """
     return min(step + 1, num_demo_frames - 1)
 
@@ -271,7 +271,7 @@ def score(trajectory: Trajectory) -> EvalScore:
     `auc_add` is the paper's definition: AUC over `ADD_AUC_THRESHOLDS` (strict `<`) per part, then the mean over
     parts. `auc_add_of_mean` takes the AUC of the part-averaged ADD instead (REPPO's online definition).
     `mean_add` averages the frames before each env's first NaN. The state after the last step is scored against the
-    last demo frame, which the env pairs twice; frame 0 is never scored (decision 005).
+    last demo frame, which the env pairs twice; frame 0 is never scored.
     """
     num_steps = trajectory.add.shape[0]
     scored = np.arange(num_steps)[:, None] < _nan_start(trajectory.nan_from, num_steps)[None, :]
