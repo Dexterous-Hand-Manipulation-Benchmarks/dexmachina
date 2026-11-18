@@ -179,13 +179,14 @@ EVAL_CONFIG = AppliedEvalConfig(
 
 
 # Spec fields that cannot change the eval rollout, left out of `task_hash` so that every seed and method trained on
-# one task shares its hash: display and recording, the seed, and the object-gain curriculum (the eval object is not
-# actuated). Leaving a field out on purpose: a field missing here splits one task into two hashes, which shows; a
-# field wrongly listed here would merge two tasks silently.
+# one task shares its hash: display and recording, the dead `is_eval` field, and the seed and object-gain curriculum,
+# which only the curriculum reads; `make_eval_env` builds no curriculum because it forces actuate_object=False and
+# refuses maniptrans. Exclude-list on purpose: a field missing here gives one task two hashes (two groups in the eval
+# table); a field wrongly listed here would merge two tasks silently.
 NOT_IN_TASK_HASH = frozenset(
     {
         "vis", "overlay", "n_envs_per_row", "show_markers", "show_kpts", "record_video", "render_camera", "raytrace",
-        "record_interval", "show_fps", "color_object", "vis_contact", "seed",
+        "record_interval", "show_fps", "color_object", "vis_contact", "is_eval", "seed",
         "interval", "first_ratio", "first_stop_iter", "second_stop_iter", "kp_init", "kv_init", "force_range_init",
         "max_epochs", "num_zero_epoch", "curr_schedule", "fixed_mode", "decay_rew", "wait_epochs", "decrease_rew",
         "curr_rew_thres", "deque_freq", "grad_threshold", "gain_mode", "uniform_mode", "upper_ratios",
@@ -202,8 +203,17 @@ def _eval_spec(spec: EnvSpec) -> EnvSpec:
 
 def task_hash(spec: EnvSpec) -> str:
     """Names the eval task a training spec is evaluated on: equal for specs whose eval rollouts can only be equal."""
-    task = {name: value for name, value in asdict(_eval_spec(spec)).items() if name not in NOT_IN_TASK_HASH}
+    task = {name: _as_float(value) for name, value in asdict(_eval_spec(spec)).items() if name not in NOT_IN_TASK_HASH}
     return hashlib.sha256(json.dumps(task, sort_keys=True).encode()).hexdigest()[:TASK_HASH_HEX_DIGITS]
+
+
+def _as_float(value: Any) -> Any:
+    """Numbers as floats: specs from code and from argv differ in int vs float (10 vs 10.0) but are equal."""
+    if isinstance(value, tuple):
+        return [_as_float(item) for item in cast(tuple[Any, ...], value)]
+    if isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    return value
 
 
 def make_eval_env(spec: EnvSpec, device: str) -> BaseEnv:
