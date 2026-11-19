@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from dexmachina.envs.spec import EnvSpec
 
@@ -20,6 +20,13 @@ SHA_KEY = "dexmachina_sha"
 DIRTY_KEY = "dexmachina_dirty"
 RUN_SPEC_KEYS = frozenset({SPEC_KEY, REWARD_OVERRIDES_KEY, SHA_KEY, DIRTY_KEY})
 DEXMACHINA_ROOT = Path(__file__).resolve().parents[2]
+
+
+class DexmachinaState(NamedTuple):
+    """The dexmachina checkout's commit and whether it had uncommitted changes."""
+
+    sha: str
+    dirty: bool
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,10 @@ def _git(*args: str) -> str:
     return completed.stdout.strip()
 
 
+def current_dexmachina_state() -> DexmachinaState:
+    return DexmachinaState(sha=_git("rev-parse", "HEAD"), dirty=bool(_git("status", "--porcelain")))
+
+
 def save_run_spec(directory: Path, spec: EnvSpec, reward_overrides: Mapping[str, Any]) -> Path:
     """Writes `env_spec.json` into the directory and returns its path; an existing file is never replaced."""
     path = directory / RUN_SPEC_FILENAME
@@ -52,11 +63,12 @@ def save_run_spec(directory: Path, spec: EnvSpec, reward_overrides: Mapping[str,
             f"{path} exists already. Replacing it would change the env that the checkpoints next to it are "
             "evaluated on. Save into a new directory, or delete the file if it is stale."
         )
+    state = current_dexmachina_state()
     content = {
         SPEC_KEY: json.loads(spec.to_json()),
         REWARD_OVERRIDES_KEY: dict(reward_overrides),
-        SHA_KEY: _git("rev-parse", "HEAD"),
-        DIRTY_KEY: bool(_git("status", "--porcelain")),
+        SHA_KEY: state.sha,
+        DIRTY_KEY: state.dirty,
     }
     directory.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(content, sort_keys=True, indent=2) + "\n")
