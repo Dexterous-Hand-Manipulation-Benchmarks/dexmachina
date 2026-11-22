@@ -18,6 +18,8 @@ from dexmachina.asset_utils import get_rl_config_path
 from dexmachina.envs.base_env import BaseEnv
 from dexmachina.envs.contacts import get_contact_marker_cfgs
 from dexmachina.envs.constructors import get_common_argparser, parse_clip_string  
+# Same frame pairing and pre-reset state as the shared evaluation (team decision 005).
+from dexmachina.envs.evaluation import _PreResetTap, paired_demo_frame  # pyright: ignore[reportPrivateUsage]
 from dexmachina.rl.rl_games_wrapper import RlGamesVecEnvWrapper, RlGamesGpuEnv
 
   
@@ -70,49 +72,55 @@ def eval_one_episode(env, agent, obj_state_tensor, print_rew=False, record_video
     joint_target_right = right_hand.residual_qpos
     
     eval_data = defaultdict(list)
-    for i in range(ep_len):
-        with torch.inference_mode():
-            env_step = uenv.episode_length_buf.cpu().numpy()[0]
-            # get actions from the agent
-            actions = agent.get_action(obs, is_deterministic=True) 
-            demo_state = obj_state_tensor[env_step]
+    num_demo_frames = obj_state_tensor.shape[0]
+    # Reads the object state inside each step, before the env's own reset overwrites it on the last step.
+    tap = _PreResetTap(uenv)
+    try:
+        for i in range(ep_len):
+            with torch.inference_mode():
+                env_step = uenv.episode_length_buf.cpu().numpy()[0]
+                # get actions from the agent
+                actions = agent.get_action(obs, is_deterministic=True) 
+                # The state after step t is paired with demo frame t + 1 (decision 005).
+                demo_state = obj_state_tensor[paired_demo_frame(int(env_step), num_demo_frames)]
                     
-            if show_reference: # visualize the demo traj and set zero action
-                obj.set_object_state(
-                    root_pos=state[:, :3][None],
-                    root_quat=state[:, 3:7][None],
-                    joint_qpos=state[:, 7][None],
-                    env_idxs=torch.tensor([1], dtype=torch.int32, device=device),
-                )
-                actions[-1, :] = -1.0 
-                for robot, joints in zip([left_hand, right_hand], [joint_target_left, joint_target_right]):
-                    robot.set_joint_position(
-                        joint_targets=joints[env_step][None],
-                        env_idxs=[1],
-                    ) 
-            obs, rew, dones, infos = env.step(actions) 
-            obj_pos, obj_quat, obj_arti = obj.root_pos, obj.root_quat, obj.dof_pos
-            # print(f"Step {env_step}: Obj pos: {obj_pos.cpu().numpy()}")
-            obj_state = torch.cat([obj_pos, obj_quat, obj_arti], dim=-1)
-            eval_data["obj_state"].append(obj_state.cpu().numpy())
-            eval_data["demo_state"].append(demo_state.cpu().numpy())
+                if show_reference: # visualize the demo traj and set zero action
+                    obj.set_object_state(
+                        root_pos=state[:, :3][None],
+                        root_quat=state[:, 3:7][None],
+                        joint_qpos=state[:, 7][None],
+                        env_idxs=torch.tensor([1], dtype=torch.int32, device=device),
+                    )
+                    actions[-1, :] = -1.0 
+                    for robot, joints in zip([left_hand, right_hand], [joint_target_left, joint_target_right]):
+                        robot.set_joint_position(
+                            joint_targets=joints[env_step][None],
+                            env_idxs=[1],
+                        ) 
+                obs, rew, dones, infos = env.step(actions) 
+                # Pre-reset state from inside the step: on the last step the env has already reset the object.
+                obj_state = np.concatenate([tap.root_pos, tap.root_quat, tap.joint_pos], axis=-1).astype(np.float32)
+                eval_data["obj_state"].append(obj_state)
+                eval_data["demo_state"].append(demo_state.cpu().numpy())
 
-            rew_dict = uenv.rew_dict
-            for key in ['pos_dist', 'rot_dist', 'arti_dist']:
-                eval_data[key].append(rew_dict[key].cpu().numpy())
-            if len(dones) > 0:
-                # reset rnn state for terminated episodes
-                if agent.is_rnn and agent.states is not None:
-                    for s in agent.states:
-                        s[:, dones, :] = 0.0 
+                rew_dict = uenv.rew_dict
+                for key in ['pos_dist', 'rot_dist', 'arti_dist']:
+                    eval_data[key].append(rew_dict[key].cpu().numpy())
+                if len(dones) > 0:
+                    # reset rnn state for terminated episodes
+                    if agent.is_rnn and agent.states is not None:
+                        for s in agent.states:
+                            s[:, dones, :] = 0.0 
         
-        if print_rew:
-            print(f"Step {env_step}: Reward: {rew.cpu().numpy()}")
-            # perform operations for terminated episodes 
-            rew_dict = uenv.rew_dict
-            for k, v in rew_dict.items():
-                if 'con' in k:
-                    print(f"Step {env_step}: {k}: {v.cpu().numpy()}")
+            if print_rew:
+                print(f"Step {env_step}: Reward: {rew.cpu().numpy()}")
+                # perform operations for terminated episodes 
+                rew_dict = uenv.rew_dict
+                for k, v in rew_dict.items():
+                    if 'con' in k:
+                        print(f"Step {env_step}: {k}: {v.cpu().numpy()}")
+    finally:
+        tap.release()
     eval_data = {k: np.stack(v) for k, v in eval_data.items()}
     frames = uenv.get_recorded_frames()
     return frames, eval_data
