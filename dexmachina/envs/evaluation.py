@@ -27,6 +27,10 @@ SUCCESS_5CM_M = 0.05
 NEVER_NAN = -1
 # A trajectory that is scored in memory and never stored carries no spec hash or dexmachina commit.
 NOT_STORED = ""
+# The default seed of every method's evaluation, set after the eval env is built (building it reseeds numpy and torch
+# with the training seed). Nothing random reaches the eval rollout today (one env, no randomisation, deterministic
+# actions); a fixed seed keeps it so if something random is added, instead of varying with the training seed.
+EVAL_SEED = 0
 # BaseEnv's reset and step with use_rl_games (its default): the observation dict comes first.
 EnvReset = Callable[[], "tuple[dict[str, torch.Tensor], dict[str, Any]]"]
 EnvStep = Callable[
