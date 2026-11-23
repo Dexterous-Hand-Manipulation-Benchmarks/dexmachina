@@ -7,16 +7,16 @@ step is scored before its reset). The scorer turns the finished `Trajectory` int
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
+import torch
 
 from dexmachina.envs.add_metric import ADD_AUC_THRESHOLDS, ADD_PARTS, compute_auc
 
 if TYPE_CHECKING:
-    import torch
-
     from dexmachina.envs.base_env import BaseEnv
 
 # The per-env ADD of a part in `extras["log"]` after a step (base_env.py).
@@ -25,6 +25,8 @@ SUCCESS_2CM_M = 0.02
 SUCCESS_5CM_M = 0.05
 # Marks an env whose NaN mask was never set in `Trajectory.nan_from`.
 NEVER_NAN = -1
+# A trajectory that is scored in memory and never stored carries no spec hash or dexmachina commit.
+NOT_STORED = ""
 # BaseEnv's reset and step with use_rl_games (its default): the observation dict comes first.
 EnvReset = Callable[[], "tuple[dict[str, torch.Tensor], dict[str, Any]]"]
 EnvStep = Callable[
@@ -83,6 +85,33 @@ class Trajectory:
     dropped: BoolArray  # (num_steps, num_envs)
     demo_frame: IntArray  # (num_steps, num_envs)
     nan_from: IntArray  # (num_envs,), first NaN step or NEVER_NAN
+
+
+_TRAJECTORY_TEXT_FIELDS = ("hand", "clip", "spec_hash", "dexmachina_sha")
+
+
+def save_trajectory(path: Path, trajectory: Trajectory) -> None:
+    """Writes the trajectory as one .npz file that `load_trajectory` reads back; an existing file is never replaced."""
+    if path.exists():
+        raise FileExistsError(
+            f"{path} exists already. Replacing it would overwrite the trajectory of an earlier evaluation that its "
+            "scores were computed from. Evaluate into a new directory, or delete the file if it is stale."
+        )
+    np.savez(path, **{f.name: getattr(trajectory, f.name) for f in fields(trajectory)})
+
+
+def load_trajectory(path: Path) -> Trajectory:
+    with np.load(path, allow_pickle=False) as stored:
+        values: dict[str, Any] = {name: stored[name] for name in stored.files}
+    missing = {f.name for f in fields(Trajectory)} - values.keys()
+    if missing:
+        raise ValueError(
+            f"{path} is not a saved Trajectory: it lacks {sorted(missing)}. It was not written by save_trajectory "
+            "or by another version of it. Evaluate again to write it."
+        )
+    for name in _TRAJECTORY_TEXT_FIELDS:
+        values[name] = str(values[name])
+    return Trajectory(**values)
 
 
 class EvalRecorder:
@@ -301,6 +330,19 @@ def score(trajectory: Trajectory, part_aggregations: Mapping[str, PartAggregatio
         drop_rate=float((trajectory.dropped & scored).any(axis=0).mean()),
         auc_add_aggregated={name: aggregate(per_part) for name, aggregate in (part_aggregations or {}).items()},
     )
+
+
+def zero_action_floor(env: "BaseEnv", hand: str, clip: str) -> EvalScore:
+    """What the all-zero action scores on `env` (from `make_eval_env`): the level a policy must beat to have learned.
+
+    Run it on the env of the evaluation, before the policy's episode: both episodes then share the env, so the floor
+    cannot differ from the protocol the policy is scored on. `rollout_episode` resets the env first.
+    """
+    zero = torch.zeros((env.num_envs, env.action_dim), device=env.device)
+    trajectory = rollout_episode(
+        env, lambda _observation: zero, hand, clip, spec_hash=NOT_STORED, dexmachina_sha=NOT_STORED
+    )
+    return score(trajectory)
 
 
 def _nan_start(nan_from: IntArray, num_steps: int) -> IntArray:

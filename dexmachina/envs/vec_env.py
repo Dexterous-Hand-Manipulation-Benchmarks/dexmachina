@@ -6,6 +6,7 @@ ended (`info["end_cause"]`), terminated and truncated flags that follow from tho
 the env does not overwrite on the next step.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import Any, Protocol, cast
@@ -121,6 +122,9 @@ class DexMachinaVecEnv:
     """
 
     metadata: dict[str, Any] = {"autoreset_mode": AUTORESET_SAME_STEP}
+    # What `from_spec` built the env from, so a run can save it; None for an env wrapped directly.
+    spec: EnvSpec | None = None
+    reward_overrides: Mapping[str, Any] | None = None
 
     def __init__(self, env: EnvInternals) -> None:
         if not env.use_rl_games:
@@ -143,8 +147,11 @@ class DexMachinaVecEnv:
         self._install_hooks()
 
     @classmethod
-    def from_spec(cls, spec: EnvSpec, device: str, reward_overrides: dict[str, Any]) -> "DexMachinaVecEnv":
-        return cls(cast(EnvInternals, make_env(spec, device, reward_overrides)))
+    def from_spec(cls, spec: EnvSpec, device: str, reward_overrides: Mapping[str, Any]) -> "DexMachinaVecEnv":
+        vec_env = cls(cast(EnvInternals, make_env(spec, device, reward_overrides)))
+        vec_env.spec = spec
+        vec_env.reward_overrides = dict(reward_overrides)
+        return vec_env
 
     @cached_property
     def single_observation_space(self) -> Any:
