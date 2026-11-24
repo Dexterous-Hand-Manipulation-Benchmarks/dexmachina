@@ -182,6 +182,7 @@ def get_all_env_cfg(args, device, load_retarget_data=True):
             kp_init=args.kp_init,
             kv_init=args.kv_init,
             force_range_init=args.force_range_init, 
+            seed=args.seed,
             rew_thresholds=dict(
                 task=curr_rew_thres[0],
                 con=curr_rew_thres[1],

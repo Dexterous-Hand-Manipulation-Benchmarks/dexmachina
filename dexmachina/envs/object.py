@@ -336,8 +336,8 @@ class ArticulatedObject:
         num_vertices = vertices.shape[0]
         replace = num_samples > num_vertices 
         # make this deterministic
-        np.random.seed(seed)
-        idxs = np.random.choice(num_vertices, num_samples, replace=replace)
+        # RandomState(seed) draws what np.random.seed(seed) + np.random.choice drew, without touching the global state
+        idxs = np.random.RandomState(seed).choice(num_vertices, num_samples, replace=replace)
         return torch.tensor(vertices[idxs], dtype=torch.float32)
 
     def initialize_value_buffers(self):

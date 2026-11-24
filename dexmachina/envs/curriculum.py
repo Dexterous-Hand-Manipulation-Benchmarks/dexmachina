@@ -126,8 +126,9 @@ class Curriculum:
         self.num_epoch_since_last_decay = 0
         self.num_epoch_since_zero = 0
         self.resample_every_epoch = curr_cfg['resample_every_epoch'] 
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
+        # Own generators: seeding the global ones here would overwrite the run's seed at every env build.
+        self.np_rng = np.random.default_rng(self.seed)
+        self.torch_rng = torch.Generator(device=self.object.device).manual_seed(self.seed)
         self.skip_grad = curr_cfg['skip_grad']
         self.zero_epoch = curr_cfg.get('zero_epoch', 50000)
 
@@ -340,7 +341,7 @@ class Curriculum:
                     lower = self.curr_gains_lower[key]
                     upper = self.curr_gains[key] 
                     # uniform from lower to upper, sample shape (num_envs, num_joints)
-                    rand_gains[key] = torch.rand((self.num_envs, self.obj_ndof), dtype=torch.float32, device=self.object.device) * (upper - lower) + lower
+                    rand_gains[key] = torch.rand((self.num_envs, self.obj_ndof), dtype=torch.float32, device=self.object.device, generator=self.torch_rng) * (upper - lower) + lower
         else:
             # same params for all 
             for key in self.decay_terms:
@@ -359,7 +360,7 @@ class Curriculum:
         if self.tconst_upper == 0.02:
             tconst = 0.02
         else:
-            tconst = np.random.uniform(self.tconst_lower, self.tconst_upper)
+            tconst = self.np_rng.uniform(self.tconst_lower, self.tconst_upper)
         new_params = torch.tensor([tconst,1.0, self.d0_lower, self.dmid_lower, 0.001, 0.5, 2.0]) 
         self.object.entity._solver.set_geom_sol_params(new_params)
         return 
