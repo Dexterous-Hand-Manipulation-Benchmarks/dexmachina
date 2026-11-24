@@ -37,6 +37,8 @@ BENCHMARK_TASK = replace(
     dialback_ep_len=80,
     curr_rew_thres=(0.6, 0.01, 0.01, 0.01),
     max_epochs=10000,
+    # Team decision 2026-11-24: random start frames keep the gated schedule's statistics moving (one entry per reset).
+    rand_init_ratio=0.02,
 )
 
 
