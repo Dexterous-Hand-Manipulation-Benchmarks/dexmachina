@@ -625,9 +625,8 @@ class BaseEnv:
         # while the curriculum's assistive gains are non-zero, part of the
         # tracking is done by that controller and not by the policy.
         add_dict = None
-        _add_metric = getattr(self, "add_metric", None)
-        if _add_metric is not None and _add_metric.ready:
-            add_dict = _add_metric.compute(self.episode_length_buf)
+        if self.add_metric is not None and self.add_metric.ready:
+            add_dict = self.add_metric.compute(self.episode_length_buf)
 
         if "log" not in self.extras:
             self.extras["log"] = dict() 
