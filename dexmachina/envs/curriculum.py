@@ -1,4 +1,5 @@
 import os  
+from bisect import bisect_right
 import torch 
 import numpy as np
 import genesis as gs
@@ -18,6 +19,10 @@ def get_curriculum_cfg(kwargs=dict()):
         "first_stop_iter": 7000, # epoch count
         "second_stop_iter": 16000, # epoch count
         "fixed_mode": "exp", # or exp 
+        # schedule=fixed runs on the env step clock: decays at fractions of the budget, zero from fixed_zero_fraction on
+        "budget_env_steps": None,
+        "fixed_start_fraction": 0.01,
+        "fixed_zero_fraction": 0.6,
 
         # if schedule=exp: auto linear 
         "deque_freq": 1, # epoch count
@@ -50,6 +55,12 @@ def get_curriculum_cfg(kwargs=dict()):
     return curr_cfg
 
 SCHEDULE_OPTIONS=["fixed", "exp", "uniform"] 
+
+# The gated schedules snap the gains to zero once kp (or fr) falls below these thresholds. The fixed schedule uses the
+# kp one to count its decays: with the benchmark's kp_init=80 and upper ratio 0.9, 80 * 0.9**70 = 0.0515 and
+# 80 * 0.9**71 = 0.0464 < 0.05, so the 71st ratio decay is the one that reaches zero.
+KP_ZERO_THRESHOLD = 0.05
+FR_ZERO_THRESHOLD = 0.01
 
 class Curriculum:
     def __init__(self, curr_cfg, task_object, reward_keys, num_envs, achieved_length, max_episode_length):
@@ -104,6 +115,12 @@ class Curriculum:
         self.upper_ratios = curr_cfg.get('upper_ratios', dict(kp=0.9, kv=0.9, fr=0.9))
         self.lower_ratios = curr_cfg.get('lower_ratios', dict(kp=0.8, kv=0.8, fr=0.8))
 
+        self.env_steps = 0 # training env steps, see advance_env_steps
+        self.fixed_decays_done = 0
+        self.fixed_decay_steps = []
+        if self.schedule == "fixed":
+            self.fixed_decay_steps = self.get_fixed_decay_steps(curr_cfg)
+
         self.rew_deques = dict()
         self.rew_grads = dict() 
         self.deque_len = curr_cfg['deque_len'] 
@@ -138,14 +155,62 @@ class Curriculum:
             self.object.entity._solver.set_geom_sol_params(new_params)
         return 
         
-    def set_fixed_decay(self, epoch_num):
+    def get_fixed_decay_steps(self, curr_cfg):
+        """Env step of each fixed decay: equally spaced from the start fraction to the zero fraction of the budget."""
+        budget = curr_cfg['budget_env_steps']
+        if budget is None or budget <= 0:
+            raise ValueError(
+                f"schedule 'fixed' needs budget_env_steps > 0, got {budget}. The fixed schedule is a fraction of the "
+                "run's training env steps, so it cannot be placed without them. Set budget_env_steps (--budget_env_steps)."
+            )
+        if self.fixed_mode == "lin":
+            raise ValueError(
+                "schedule 'fixed' does not support fixed_mode 'lin': it is defined on epochs, not on the env step "
+                "clock. Use fixed_mode 'exp' or 'uniform'."
+            )
+        start, zero = curr_cfg['fixed_start_fraction'], curr_cfg['fixed_zero_fraction']
+        if not 0 <= start < zero <= 1:
+            raise ValueError(
+                f"fixed schedule needs 0 <= fixed_start_fraction < fixed_zero_fraction <= 1, got {start}, {zero}; "
+                "the decays are spaced evenly between the two fractions, so set fixed_start_fraction < fixed_zero_fraction."
+            )
+        count = self.get_fixed_decay_count()
+        return [round(budget * (start + (zero - start) * i / (count - 1))) for i in range(count)]
+
+    def get_fixed_decay_count(self):
+        """Ratio decays until kp is below the zero threshold; the last of them snaps the gains to zero."""
+        ratio = self.upper_ratios['kp']
+        if 'kp' not in self.decay_terms or not 0 < ratio < 1:
+            raise ValueError(
+                f"schedule 'fixed' counts its decays by kp falling below {KP_ZERO_THRESHOLD}, so kp must be decayed "
+                f"with an upper ratio in (0, 1); got gain_mode {self.gain_mode!r}, kp upper ratio {ratio}."
+            )
+        count, kp = 0, self.init_gains['kp']
+        while kp >= KP_ZERO_THRESHOLD:
+            kp *= ratio
+            count += 1
+        return count
+
+    def advance_env_steps(self, num_envs):
+        """Count training env steps and apply the fixed decays that are due; returns whether the gains changed.
+
+        Gains depend only on the total count, not on how often or in what batches it is advanced.
         """
-        2 stage fast and slow linear decay, or 1 stage exponential decay, only depending on epoch_num
-        """ 
-        interval = self.curr_cfg['interval']
-        if epoch_num % interval != 0 or epoch_num == 0:
-            return False, "wrong interval"
-        if self.fixed_mode == "exp" or self.fixed_mode == "uniform":
+        self.env_steps += num_envs
+        due = bisect_right(self.fixed_decay_steps, self.env_steps)
+        changed = due > self.fixed_decays_done
+        while self.fixed_decays_done < due:
+            self.fixed_decays_done += 1
+            self.set_fixed_decay(zero=self.fixed_decays_done == len(self.fixed_decay_steps))
+        return changed
+
+    def set_fixed_decay(self, zero):
+        """One decay of the fixed schedule: the upper (and, if uniform, lower) ratios, or all zero for the last."""
+        if zero:
+            for k in self.decay_terms:
+                self.curr_gains[k] = 0.0
+                self.curr_gains_lower[k] = 0.0
+        elif self.fixed_mode == "exp" or self.fixed_mode == "uniform":
             for k in self.decay_terms:
                 fixed_ratio = self.upper_ratios.get(k, 0.9)
                 # if self.curr_gains[k] < 1 and k == 'kp':
@@ -159,33 +224,6 @@ class Curriculum:
                         self.curr_gains_lower[k] *= low_ratio
                     elif self.uniform_mode == "slow":
                         self.curr_gains_lower[k] = self.curr_gains[k] * low_ratio
-        elif self.fixed_mode == "lin":
-            # two stage linear decay
-            first_stop = self.curr_cfg['first_stop_iter']
-            second_stop = self.curr_cfg['second_stop_iter']
-            if epoch_num < first_stop:
-                mid_gains = {k: v * self.curr_cfg['first_ratio'] for k, v in self.init_gains.items()}
-                frac = epoch_num / first_stop
-                new_gains = {
-                    "kp": self.init_gains['kp'] * (1 - frac) + mid_gains['kp'] * frac,
-                    "kv": self.init_gains['kv'] * (1 - frac) + mid_gains['kv'] * frac,
-                    "fr": self.init_gains['fr'] * (1 - frac) + mid_gains['fr'] * frac,
-                }
-            elif epoch_num < second_stop:
-                frac = (epoch_num - first_stop) / (second_stop - first_stop)
-                new_gains = {
-                    "kp": mid_gains['kp'] * (1 - frac) + self.init_gains['kp'] * frac,
-                    "kv": mid_gains['kv'] * (1 - frac) + self.init_gains['kv'] * frac,
-                    "fr": mid_gains['fr'] * (1 - frac) + self.init_gains['fr'] * frac,
-                }
-            else:
-                new_gains = {k: 0.0 for k in self.init_gains}
-            
-            for k in self.decay_terms:
-                self.curr_gains[k] = new_gains[k]
-        else:
-            raise ValueError("Invalid fixed mode")
-        return True, ""
 
     def determine_decay(self, epoch_num):
         reduce_gains = True 
@@ -193,8 +231,6 @@ class Curriculum:
         if epoch_num < self.wait_epochs:
             reason += f"waiting for {self.wait_epochs} epochs"
             reduce_gains = False
-        if self.schedule == "fixed": # always True
-            return reduce_gains, reason
         for key in self.rew_deques.keys():
             if len(self.rew_deques[key]) < self.deque_len:
                 reduce_gains = False 
@@ -271,7 +307,7 @@ class Curriculum:
         for k, v in self.curr_gains.items():
             ratio = self.upper_ratios[k]
             new_gains[k] = v * ratio
-        if "kp" in new_gains and new_gains['kp'] < 0.05 or "fr" in new_gains and new_gains['fr'] < 0.01:
+        if "kp" in new_gains and new_gains['kp'] < KP_ZERO_THRESHOLD or "fr" in new_gains and new_gains['fr'] < FR_ZERO_THRESHOLD:
             new_gains = {k: 0.0 for k in new_gains}
         for k in self.decay_terms:
             self.curr_gains[k] = new_gains[k]
@@ -295,7 +331,7 @@ class Curriculum:
         else:
             raise ValueError("Invalid uniform mode") 
             
-        if ('kp' in self.decay_terms and self.curr_gains['kp'] < 0.05) or ('fr' in self.decay_terms and self.curr_gains['fr'] < 0.01):
+        if ('kp' in self.decay_terms and self.curr_gains['kp'] < KP_ZERO_THRESHOLD) or ('fr' in self.decay_terms and self.curr_gains['fr'] < FR_ZERO_THRESHOLD):
             for k in self.decay_terms:
                 self.curr_gains[k] = 0.0
                 self.curr_gains_lower[k] = 0.0
@@ -395,6 +431,9 @@ class Curriculum:
         return decayed
 
     def set_curriculum(self, epoch_num):
+        if self.schedule == "fixed":
+            zero_gains = all(self.curr_gains[key] == 0.0 for key in self.decay_terms)
+            return zero_gains, False, "fixed schedule: the gains follow the env step clock, epochs are ignored"
         # if gains are already zero, no need to reset
         self.update_reward_grads()
         # Identical to counting calls when called once per epoch (rl_games), correct otherwise.
@@ -439,9 +478,7 @@ class Curriculum:
                 dict(gains=self.curr_gains.copy(), lower=self.curr_gains_lower.copy())
             )
 
-            if self.schedule == "fixed":
-                gains_decayed, reason = self.set_fixed_decay(epoch_num)
-            elif self.schedule == "exp":
+            if self.schedule == "exp":
                 gains_decayed, reason = self.set_auto_exp_decay(epoch_num)
             elif self.schedule == "uniform":
                 gains_decayed, reason = self.set_auto_uniform_decay(epoch_num)

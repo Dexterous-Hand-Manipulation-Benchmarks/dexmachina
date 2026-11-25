@@ -655,6 +655,9 @@ class BaseEnv:
             self.extras["log"].update(add_dict)
 
         if self.use_curriculum:
+            if self.record_curriculum and isinstance(self.curriculum, Curriculum):
+                if self.curriculum.advance_env_steps(self.num_envs):
+                    self.curriculum.reset_object_gains()
             rew_grads = self.curriculum.get_reward_grads()
             self.extras["log"].update(
                 {f"grad/{k}": v for k, v in rew_grads.items()}

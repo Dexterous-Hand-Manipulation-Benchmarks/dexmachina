@@ -191,7 +191,7 @@ NOT_IN_TASK_HASH = frozenset(
         "max_epochs", "num_zero_epoch", "curr_schedule", "fixed_mode", "decay_rew", "wait_epochs", "decrease_rew",
         "curr_rew_thres", "deque_freq", "grad_threshold", "gain_mode", "uniform_mode", "upper_ratios",
         "lower_ratios", "deque_len", "resample_every_epoch", "skip_grad", "dialback_ep_len", "dialback_min_epochs",
-        "dialback_ratios",
+        "dialback_ratios", "budget_env_steps", "fixed_start_fraction", "fixed_zero_fraction",
     }
 )  # fmt: skip
 TASK_HASH_HEX_DIGITS = 12

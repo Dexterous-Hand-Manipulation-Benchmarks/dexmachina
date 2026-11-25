@@ -125,6 +125,13 @@ class EnvSpec:
     max_epochs: int = option(5000, "--max_epochs", "-me", help="Maximum number of epochs to train the agent.")
     num_zero_epoch: int = option(1000, "--num_zero_epoch", "-nze")
     curr_schedule: str = option("uniform", "--curr_schedule", choices=("fixed", "exp", "uniform"))
+    budget_env_steps: int | None = option(
+        None,
+        "--budget_env_steps",
+        help="Training env steps the run is budgeted for; the fixed curriculum schedule is a fraction of it",
+    )
+    fixed_start_fraction: float = option(0.01, "--fixed_start_fraction")
+    fixed_zero_fraction: float = option(0.6, "--fixed_zero_fraction")
     fixed_mode: str = option("uniform", "--fixed_mode", choices=("exp", "lin", "uniform"))
     decay_rew: bool = option(False, "--decay_rew", "-drw")
     wait_epochs: int = option(500, "--wait_epochs")
