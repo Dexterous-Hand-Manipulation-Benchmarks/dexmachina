@@ -5,6 +5,10 @@ from os.path import join
 from dexmachina.envs.reward_utils import position_distance, rotation_distance, chamfer_distance, transform_contact
 
 
+# Keys RewardModule reads with a default that get_reward_cfg leaves out; an override may set them.
+OPTIONAL_REWARD_KEYS = frozenset({"bc_wrist_weight"})
+
+
 def get_reward_cfg(last_n_frame=-1):
     reward_cfg = {
         # Task Tracking Sharpness (from task_rew_betas=[10.0, 1.0, 5.0])

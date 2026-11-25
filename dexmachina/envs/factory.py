@@ -8,6 +8,7 @@ from typing import Any, Protocol, cast
 
 from dexmachina.envs.base_env import BaseEnv
 from dexmachina.envs.constructors import get_all_env_cfg
+from dexmachina.envs.rewards import OPTIONAL_REWARD_KEYS
 from dexmachina.envs.spec import EnvSpec
 
 CONTACT_REW_WEIGHT_KEY = "contact_rew_weight"
@@ -92,6 +93,13 @@ def verify_applied_config(env: BaseEnv, expected: AppliedEnvConfig) -> None:
 def build_env_kwargs(spec: EnvSpec, device: str, reward_overrides: Mapping[str, Any]) -> dict[str, Any]:
     """The BaseEnv keyword arguments for the spec; reward_overrides set reward keys that have no command line flag."""
     env_kwargs = get_all_env_cfg(spec.to_args(), device=device)
+    valid_keys = set(env_kwargs["reward_cfg"]) | OPTIONAL_REWARD_KEYS
+    unknown_keys = sorted(set(reward_overrides) - valid_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"unknown reward override keys {unknown_keys}: the reward module would ignore them, so the run would "
+            f"train with the default values. Fix the key names; the valid keys are {sorted(valid_keys)}."
+        )
     env_kwargs["reward_cfg"].update(reward_overrides)
     return env_kwargs
 
