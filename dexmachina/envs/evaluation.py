@@ -16,6 +16,7 @@ import torch
 
 from dexmachina.envs.add_metric import ADD_AUC_THRESHOLDS, ADD_PARTS, compute_auc
 from dexmachina.envs.run_spec import DexmachinaState, current_dexmachina_state
+from dexmachina.envs.vec_env import POLICY_OBS_KEY
 
 if TYPE_CHECKING:
     from dexmachina.envs.base_env import BaseEnv
@@ -28,9 +29,9 @@ SUCCESS_5CM_M = 0.05
 NEVER_NAN = -1
 # A trajectory that is scored in memory and never stored carries no spec hash or dexmachina commit.
 NOT_STORED = ""
-# The shared default seed for the methods' evaluations (FlashSAC's so far), set after the eval env is built (building it reseeds numpy and torch
-# with the training seed). Nothing random reaches the eval rollout today (one env, no randomisation, deterministic
-# actions); a fixed seed keeps it so if something random is added, instead of varying with the training seed.
+# The shared default seed for the methods' evaluations (FlashSAC's so far), set after the eval env is built so it
+# does not depend on the training seed. Nothing random reaches the eval rollout today (one env, no randomisation,
+# deterministic actions); a fixed seed keeps it so if something random is added, instead of varying with the training seed.
 EVAL_SEED = 0
 # Prefix of every benchmark key in W&B. Not "eval/": the methods' in-training evaluations log their own eval/* keys,
 # and the two must not share a chart.
@@ -275,7 +276,7 @@ def rollout_episode(
     observations, _ = cast(EnvReset, env.reset)()
     try:
         for _ in range(num_steps):
-            observations, _, _, time_outs, extras = env_step(next_actions(observations["policy"]))
+            observations, _, _, time_outs, extras = env_step(next_actions(observations[POLICY_OBS_KEY]))
             add = np.stack(
                 [extras["log"][ADD_LOG_KEY.format(part=part)].detach().cpu().numpy() for part in ADD_PARTS], axis=-1
             )

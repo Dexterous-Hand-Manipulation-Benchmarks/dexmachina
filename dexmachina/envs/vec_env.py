@@ -170,8 +170,9 @@ class DexMachinaVecEnv:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         if seed is not None or options is not None:
             raise ValueError(
-                "DexMachinaVecEnv.reset takes no seed or options: the env is seeded when it is built "
-                "(EnvSpec.seed). Call reset() without arguments."
+                "DexMachinaVecEnv.reset takes no seed or options: building the env does not seed "
+                "numpy or torch (EnvSpec.seed seeds only the curriculum's own generators). Seed them in the method "
+                "and call reset() without arguments."
             )
         observations, _ = self.env.reset()
         self._capture = None
