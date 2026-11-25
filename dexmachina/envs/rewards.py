@@ -56,13 +56,6 @@ def get_reward_cfg(last_n_frame=-1):
 
 class RewardModule:
     def __init__(self, reward_cfg, demo_data, retarget_data, device):
-        print("\n" + "=" * 50)
-        print("[DEBUG] ACTIVE REWARD CONFIGURATION:")
-        print(f"  -> Force Penalty:   {reward_cfg.get('force_penalty')}")
-        print(f"  -> Action Penalty:  {reward_cfg.get('action_penalty')}")
-        print(f"  -> Imi Rew Weight:  {reward_cfg.get('imi_rew_weight')}")
-        print(f"  -> Con Rew Weight:  {reward_cfg.get('contact_rew_weight')}")
-        print("=" * 50 + "\n")
         self.cfg = reward_cfg
         self.last_n_frame = reward_cfg.get("last_n_frame", -1)
         self.exp_kpt_first = reward_cfg.get("exp_kpt_first", False)
@@ -420,7 +413,6 @@ class RewardModule:
     ):
         demo_contacts = self.match_demo_state(f"contact_links_{side}", episode_length_buf)
 
-        # --- VIEW FIX: Restore 4D representation (N, 2, num_links, 4) ---
         if demo_contacts.dim() == 3:
             num_obj_links = contact_link_pos.shape[1]
             num_hand_links = contact_link_pos.shape[2]
