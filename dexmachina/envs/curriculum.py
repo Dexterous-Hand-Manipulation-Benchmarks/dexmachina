@@ -188,6 +188,12 @@ class Curriculum:
                 "the decays are spaced evenly between the two fractions, so set fixed_start_fraction < fixed_zero_fraction."
             )
         count = self.get_fixed_decay_count()
+        if count < 2:
+            raise ValueError(
+                f"schedule 'fixed' needs at least 2 decays, got {count}: kp starts at {self.init_gains['kp']} and the "
+                f"upper ratio {self.upper_ratios['kp']} brings it below {KP_ZERO_THRESHOLD} in {count} step(s), so the "
+                "decays cannot be spaced between the start and zero fractions. Raise kp_init or use a ratio closer to 1."
+            )
         return [round(budget * (start + (zero - start) * i / (count - 1))) for i in range(count)]
 
     def get_fixed_decay_count(self):
