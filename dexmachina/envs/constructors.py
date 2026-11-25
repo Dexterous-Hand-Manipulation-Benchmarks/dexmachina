@@ -110,6 +110,7 @@ def get_all_env_cfg(args, device, load_retarget_data=True):
     env_cfg['use_contact_reward'] = args.contact_rew_weight > 0
     env_cfg['use_rl_games'] = args.use_rl_games
     env_cfg['rand_init_ratio'] = args.rand_init_ratio  
+    env_cfg['clear_nan_on_reset'] = args.clear_nan_on_reset
     env_cfg['chunk_ep_length'] = args.chunk_ep_length
 
     if args.record_interval > 0 or args.record_video:

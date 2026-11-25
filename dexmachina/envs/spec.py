@@ -102,6 +102,7 @@ class EnvSpec:
     use_rl_games: bool = option(False, "--use_rl_games", "-rlg")
     is_eval: bool = option(False, "--is_eval", "-eval")
     rand_init_ratio: float = option(0.0, "--rand_init_ratio", "-randr")
+    clear_nan_on_reset: bool = option(True, "--clear_nan_on_reset", help="Clear the NaN flag of an env when it resets")
     chunk_ep_length: int = option(-1, "--chunk_ep_length", "-chunk")
     use_rand: bool = option(False, "--use_rand", "-rand")
     rand_friction: bool = option(False, "--rand_friction", "-rf")
@@ -197,6 +198,9 @@ def add_env_arguments(parser: argparse.ArgumentParser) -> None:
     for f in dataclasses.fields(EnvSpec):
         arg: ArgSpec = f.metadata[ARG_METADATA_KEY]
         hint = hints[f.name]
+        if hint is bool and f.default:
+            parser.add_argument(*arg.flags, action=argparse.BooleanOptionalAction, default=True, help=arg.help)
+            continue
         if hint is bool:
             parser.add_argument(*arg.flags, action="store_true", help=arg.help)
             continue

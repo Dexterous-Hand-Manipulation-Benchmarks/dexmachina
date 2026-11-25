@@ -138,6 +138,7 @@ def get_env_cfg(
         'use_rl_games': True,
         "is_eval": False, 
         "rand_init_ratio": 0.0, # randomize initial states  
+        "clear_nan_on_reset": True,
         "env_spacing": ENV_SPACING,
         "n_envs_per_row": None, # this will default to grid layout 
         "chunk_ep_length": -1,#chunk the episode length
@@ -398,6 +399,7 @@ class BaseEnv:
         self.num_privileged_obs = None
         self.num_actions = self.action_dim # need for rsl
         self.rand_init_ratio = env_cfg.get('rand_init_ratio', 0.0) 
+        self.clear_nan_on_reset = env_cfg.get('clear_nan_on_reset', True)
         # ADD metric logging (see envs/add_metric.py). num_verts matches the
         # offline compute_add.py default so the numbers are comparable.
         self.log_add_metric = env_cfg.get('log_add_metric', False)
@@ -989,6 +991,9 @@ class BaseEnv:
             obj.reset_idx(env_idxs, self.episode_start_buf[env_idxs])
 
         self.last_actions[env_idxs] = 0.0
+        # the robot and object NaN checks read the sim state, which the resets above just replaced
+        if self.clear_nan_on_reset:
+            self.nan_envs[env_idxs] = False
         
         self.reset_buf[env_idxs] = True
         self.reset_terminated[env_idxs] = True
