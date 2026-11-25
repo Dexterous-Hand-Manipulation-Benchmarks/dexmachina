@@ -1,4 +1,5 @@
 import os  
+import warnings
 from bisect import bisect_right
 import torch 
 import numpy as np
@@ -14,10 +15,11 @@ def get_curriculum_cfg(kwargs=dict()):
         "decay_rew": False,
         "schedule": "exp", # or exp or uniform 
         "deque_len": 100, # length of reward deques 
-        "interval": 500, # epoch count
-        "first_ratio": 0.3, # determines how much to reduce the gain at the end of firt stage
-        "first_stop_iter": 7000, # epoch count
-        "second_stop_iter": 16000, # epoch count
+        # kept for compatibility with dexmachina's argparser; no effect since the epoch-based fixed mode was removed
+        "interval": 500,
+        "first_ratio": 0.3,
+        "first_stop_iter": 7000,
+        "second_stop_iter": 16000,
         "fixed_mode": "exp", # or exp 
         # schedule=fixed runs on the env step clock: decays at fractions of the budget, zero from fixed_zero_fraction on
         "budget_env_steps": None,
@@ -56,6 +58,8 @@ def get_curriculum_cfg(kwargs=dict()):
 
 SCHEDULE_OPTIONS=["fixed", "exp", "uniform"] 
 
+INERT_OPTIONS = ("interval", "first_ratio", "first_stop_iter", "second_stop_iter")
+
 # The gated schedules snap the gains to zero once kp (or fr) falls below these thresholds. The fixed schedule uses the
 # kp one to count its decays: with the benchmark's kp_init=80 and upper ratio 0.9, 80 * 0.9**70 = 0.0515 and
 # 80 * 0.9**71 = 0.0464 < 0.05, so the 71st ratio decay is the one that reaches zero.
@@ -65,6 +69,15 @@ FR_ZERO_THRESHOLD = 0.01
 class Curriculum:
     def __init__(self, curr_cfg, task_object, reward_keys, num_envs, achieved_length, max_episode_length):
         self.curr_cfg = curr_cfg
+        defaults = get_curriculum_cfg()
+        changed = {name: curr_cfg[name] for name in INERT_OPTIONS if curr_cfg[name] != defaults[name]}
+        if changed:
+            warnings.warn(
+                f"Curriculum options {changed} have no effect since the epoch-based fixed mode was removed; "
+                "remove them from the config.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.num_envs = num_envs
         self.object = task_object
         self.init_gains = {
