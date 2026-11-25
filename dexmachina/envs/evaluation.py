@@ -15,6 +15,7 @@ import numpy.typing as npt
 import torch
 
 from dexmachina.envs.add_metric import ADD_AUC_THRESHOLDS, ADD_PARTS, compute_auc
+from dexmachina.envs.run_spec import DexmachinaState, current_dexmachina_state
 
 if TYPE_CHECKING:
     from dexmachina.envs.base_env import BaseEnv
@@ -31,6 +32,9 @@ NOT_STORED = ""
 # with the training seed). Nothing random reaches the eval rollout today (one env, no randomisation, deterministic
 # actions); a fixed seed keeps it so if something random is added, instead of varying with the training seed.
 EVAL_SEED = 0
+# Prefix of every benchmark key in W&B. Not "eval/": the methods' in-training evaluations log their own eval/* keys,
+# and the two must not share a chart.
+BENCHMARK_PREFIX = "benchmark"
 # BaseEnv's reset and step with use_rl_games (its default): the observation dict comes first.
 EnvReset = Callable[[], "tuple[dict[str, torch.Tensor], dict[str, Any]]"]
 EnvStep = Callable[
@@ -355,3 +359,78 @@ def _nan_start(nan_from: IntArray, num_steps: int) -> IntArray:
 
 def _success_rate(add: FloatArray, threshold: float) -> float:
     return float(np.mean([np.mean(add[..., i] < threshold) for i in range(len(ADD_PARTS))]))
+
+
+@dataclass(frozen=True)
+class BenchmarkEvaluation:
+    """One checkpoint scored on the shared eval protocol, with what is needed to compare it across runs and methods."""
+
+    eval_score: EvalScore
+    task_hash: str
+    saved_state: DexmachinaState
+    evaluated_state: DexmachinaState
+    floor: EvalScore
+    checkpoint_step: int
+    env_step: int
+    eval_seed: int
+
+    def metrics(self) -> dict[str, float]:
+        """What goes into the W&B history; plot it against `benchmark/env_step`."""
+        result = self.eval_score
+        metrics = {
+            "auc_add": result.auc_add,
+            "auc_add_of_mean": result.auc_add_of_mean,
+            "mean_add": result.mean_add,
+            "success_2cm": result.success_2cm,
+            "success_5cm": result.success_5cm,
+            "nan_rate": result.nan_rate,
+            "drop_rate": result.drop_rate,
+            "floor/auc_add": self.floor.auc_add,
+            "checkpoint_step": float(self.checkpoint_step),
+            "env_step": float(self.env_step),
+        }
+        metrics.update({f"auc_add_part/{part}": value for part, value in result.auc_add_part.items()})
+        return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in metrics.items()}
+
+    def provenance(self) -> dict[str, str | bool | int | None]:
+        """What goes into the W&B run summary: it identifies the evaluation rather than being plotted."""
+        provenance: dict[str, str | bool | int | None] = {
+            "task_hash": self.task_hash,
+            "eval_seed": self.eval_seed,
+            "dexmachina_sha/saved": self.saved_state.sha,
+            "dexmachina_sha/evaluated": self.evaluated_state.sha,
+            "dexmachina_dirty/saved": self.saved_state.dirty,
+            "dexmachina_dirty/evaluated": self.evaluated_state.dirty,
+            "dexmachina_diff_sha256/saved": self.saved_state.diff_sha256,
+            "dexmachina_diff_sha256/evaluated": self.evaluated_state.diff_sha256,
+        }
+        return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in provenance.items()}
+
+
+def checked_dexmachina_state(saved_state: DexmachinaState, allow_dirty_dexmachina: bool) -> DexmachinaState:
+    """The dexmachina checkout the evaluation runs on, checked against the one the run trained on.
+
+    A different commit is warned about. A checkout with uncommitted changes, at training or now, is refused unless
+    `allow_dirty_dexmachina` (the eval scripts' `--allow-dirty-dexmachina`), since its commit does not say which code
+    ran.
+    """
+    evaluated_state = current_dexmachina_state()
+    if evaluated_state.sha != saved_state.sha:
+        print(
+            f"[WARNING] The run was trained with dexmachina {saved_state.sha[:12]} but is evaluated with "
+            f"{evaluated_state.sha[:12]}. The env may behave differently from training, and the score is only "
+            "comparable with other evaluations at this commit."
+        )
+    if saved_state.dirty or evaluated_state.dirty:
+        state = (
+            f"dexmachina had uncommitted changes (training: {saved_state.dirty}, evaluation: {evaluated_state.dirty}), "
+            "so its commit does not say which code ran"
+        )
+        if not allow_dirty_dexmachina:
+            raise RuntimeError(
+                f"{state}, and the score could not be reproduced or compared with other runs. Commit or stash the "
+                "changes in dexmachina (for training: retrain from a clean checkout), or pass "
+                "--allow-dirty-dexmachina for a debugging evaluation whose numbers are not reported."
+            )
+        print(f"[WARNING] {state}. Not for reported numbers.")
+    return evaluated_state
